@@ -576,3 +576,197 @@ int audio_session_channels(struct AudioSession* session) {
     }
     return session->format.mChannelsPerFrame;
 }
+
+// --- 再生 (Playback) 実装 ---
+
+struct PlaybackSession {
+    AudioQueueRef queue;
+    AudioQueueBufferRef buffers[3];
+    AudioStreamBasicDescription format;
+    AudioPlaybackCallback callback;
+    void* user_data;
+    int running;
+};
+
+static void audio_output_callback(void* user_data,
+                                   AudioQueueRef queue,
+                                   AudioQueueBufferRef buffer) {
+    struct PlaybackSession* session = (struct PlaybackSession*)user_data;
+
+    if (!session->running || !session->callback) {
+        // 無音で埋めて再エンキュー
+        memset(buffer->mAudioData, 0, buffer->mAudioDataByteSize);
+        AudioQueueEnqueueBuffer(queue, buffer, 0, NULL);
+        return;
+    }
+
+    int bytes_per_frame = session->format.mBytesPerFrame;
+    int frames = (int)(buffer->mAudioDataByteSize / bytes_per_frame);
+
+    int format = (session->format.mBitsPerChannel == 16) ? AUDIO_FORMAT_S16
+                                                          : AUDIO_FORMAT_F32;
+
+    int written = session->callback(session->user_data,
+                                     buffer->mAudioData,
+                                     frames,
+                                     session->format.mChannelsPerFrame,
+                                     (int)session->format.mSampleRate,
+                                     format);
+
+    if (written <= 0) {
+        // コールバックがデータを返さなかった場合は無音で埋める
+        memset(buffer->mAudioData, 0, buffer->mAudioDataByteSize);
+    } else if (written < frames) {
+        // 残りを無音で埋める
+        int written_bytes = written * bytes_per_frame;
+        int remaining_bytes = (int)buffer->mAudioDataByteSize - written_bytes;
+        memset((uint8_t*)buffer->mAudioData + written_bytes, 0, remaining_bytes);
+    }
+
+    AudioQueueEnqueueBuffer(queue, buffer, 0, NULL);
+}
+
+struct PlaybackSession* playback_session_create(const char* device_id,
+                                                int sample_rate,
+                                                int channels) {
+    struct PlaybackSession* session =
+        (struct PlaybackSession*)calloc(1, sizeof(struct PlaybackSession));
+    if (!session) {
+        return NULL;
+    }
+
+    // デフォルト値の設定
+    if (sample_rate <= 0) {
+        sample_rate = 48000;
+    }
+    if (channels <= 0) {
+        channels = 2;
+    }
+
+    // オーディオフォーマットの設定（16-bit signed integer）
+    session->format.mSampleRate = sample_rate;
+    session->format.mFormatID = kAudioFormatLinearPCM;
+    session->format.mFormatFlags =
+        kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
+    session->format.mBitsPerChannel = 16;
+    session->format.mChannelsPerFrame = channels;
+    session->format.mBytesPerFrame =
+        session->format.mChannelsPerFrame * (session->format.mBitsPerChannel / 8);
+    session->format.mFramesPerPacket = 1;
+    session->format.mBytesPerPacket = session->format.mBytesPerFrame;
+
+    // AudioQueue (出力) を作成
+    OSStatus status = AudioQueueNewOutput(
+        &session->format, audio_output_callback, session, NULL,
+        kCFRunLoopCommonModes, 0, &session->queue);
+
+    if (status != noErr) {
+        free(session);
+        return NULL;
+    }
+
+    // デバイスを設定
+    if (device_id) {
+        AudioDeviceID deviceID = find_device_by_uid(device_id);
+        if (deviceID != kAudioObjectUnknown) {
+            CFStringRef deviceUID =
+                CFStringCreateWithCString(NULL, device_id, kCFStringEncodingUTF8);
+            if (deviceUID) {
+                AudioQueueSetProperty(session->queue,
+                                       kAudioQueueProperty_CurrentDevice,
+                                       &deviceUID, sizeof(CFStringRef));
+                CFRelease(deviceUID);
+            }
+        }
+    }
+
+    // バッファを作成（10ms 分 x 3）
+    UInt32 bufferByteSize =
+        session->format.mSampleRate * session->format.mBytesPerFrame / 100;
+
+    for (int i = 0; i < 3; i++) {
+        status = AudioQueueAllocateBuffer(session->queue, bufferByteSize,
+                                           &session->buffers[i]);
+        if (status != noErr) {
+            AudioQueueDispose(session->queue, true);
+            free(session);
+            return NULL;
+        }
+        session->buffers[i]->mAudioDataByteSize = bufferByteSize;
+    }
+
+    return session;
+}
+
+void playback_session_destroy(struct PlaybackSession* session) {
+    if (!session) {
+        return;
+    }
+
+    if (session->running) {
+        playback_session_stop(session);
+    }
+
+    AudioQueueDispose(session->queue, true);
+    free(session);
+}
+
+int playback_session_start(struct PlaybackSession* session,
+                           AudioPlaybackCallback callback,
+                           void* user_data) {
+    if (!session || !callback) {
+        return -1;
+    }
+
+    if (session->running) {
+        return 0;
+    }
+
+    session->callback = callback;
+    session->user_data = user_data;
+    session->running = 1;
+
+    // 無音でバッファを初期化してエンキュー
+    for (int i = 0; i < 3; i++) {
+        memset(session->buffers[i]->mAudioData, 0,
+               session->buffers[i]->mAudioDataByteSize);
+        OSStatus status =
+            AudioQueueEnqueueBuffer(session->queue, session->buffers[i], 0, NULL);
+        if (status != noErr) {
+            session->running = 0;
+            return -1;
+        }
+    }
+
+    // 再生を開始
+    OSStatus status = AudioQueueStart(session->queue, NULL);
+    if (status != noErr) {
+        session->running = 0;
+        return -1;
+    }
+
+    return 0;
+}
+
+void playback_session_stop(struct PlaybackSession* session) {
+    if (!session || !session->running) {
+        return;
+    }
+
+    session->running = 0;
+    AudioQueueStop(session->queue, true);
+}
+
+int playback_session_sample_rate(struct PlaybackSession* session) {
+    if (!session) {
+        return 0;
+    }
+    return (int)session->format.mSampleRate;
+}
+
+int playback_session_channels(struct PlaybackSession* session) {
+    if (!session) {
+        return 0;
+    }
+    return session->format.mChannelsPerFrame;
+}

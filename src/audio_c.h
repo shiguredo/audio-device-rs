@@ -80,6 +80,50 @@ int audio_session_sample_rate(struct AudioSession* session);
 // セッションのチャンネル数を取得
 int audio_session_channels(struct AudioSession* session);
 
+// --- 再生 (Playback) API ---
+
+struct PlaybackSession;
+
+// 再生用コールバック
+// buffer: 書き込み先バッファ (C 側が確保)
+// frames: 要求フレーム数
+// channels: チャンネル数
+// sample_rate: サンプルレート
+// format: AUDIO_FORMAT_S16 または AUDIO_FORMAT_F32
+// 戻り値: 実際に書き込んだフレーム数 (0 = 無音)
+typedef int (*AudioPlaybackCallback)(void* user_data,
+                                     void* buffer,
+                                     int frames,
+                                     int channels,
+                                     int sample_rate,
+                                     int format);
+
+// 再生セッションを作成
+// device_id が NULL の場合はデフォルトデバイスを使用
+// sample_rate が 0 の場合はデバイスのデフォルトを使用
+// channels が 0 の場合はデバイスのデフォルトを使用
+struct PlaybackSession* playback_session_create(const char* device_id,
+                                                int sample_rate,
+                                                int channels);
+
+// 再生セッションを破棄
+void playback_session_destroy(struct PlaybackSession* session);
+
+// 再生を開始
+// 成功時は 0、失敗時は負の値を返す
+int playback_session_start(struct PlaybackSession* session,
+                           AudioPlaybackCallback callback,
+                           void* user_data);
+
+// 再生を停止
+void playback_session_stop(struct PlaybackSession* session);
+
+// 再生セッションのサンプルレートを取得
+int playback_session_sample_rate(struct PlaybackSession* session);
+
+// 再生セッションのチャンネル数を取得
+int playback_session_channels(struct PlaybackSession* session);
+
 #if defined(__cplusplus)
 }
 #endif
