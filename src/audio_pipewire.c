@@ -500,6 +500,7 @@ int audio_session_start(struct AudioSession* session,
     session->stream =
         pw_stream_new(session->core, "audio-capture", props);
     if (!session->stream) {
+        spa_hook_remove(&session->core_listener);
         pw_core_disconnect(session->core);
         session->core = NULL;
         pw_thread_loop_unlock(session->thread_loop);
@@ -843,6 +844,7 @@ int playback_session_start(struct PlaybackSession* session,
     session->stream =
         pw_stream_new(session->core, "audio-playback", props);
     if (!session->stream) {
+        spa_hook_remove(&session->core_listener);
         pw_core_disconnect(session->core);
         session->core = NULL;
         pw_thread_loop_unlock(session->thread_loop);

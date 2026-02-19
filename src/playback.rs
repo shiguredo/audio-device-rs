@@ -15,6 +15,8 @@ struct PlaybackContext {
 pub struct AudioPlayback {
     session: Option<NonNull<ffi::PlaybackSession>>,
     context: Option<Arc<PlaybackContext>>,
+    // C 側に渡している Arc の生ポインタ。start() で Arc::into_raw、stop() で Arc::from_raw する
+    context_ptr: Option<*const PlaybackContext>,
     config: AudioPlaybackConfig,
     actual_sample_rate: i32,
     actual_channels: i32,
@@ -52,6 +54,7 @@ impl AudioPlayback {
         Ok(Self {
             session: Some(session),
             context: Some(context),
+            context_ptr: None,
             config,
             actual_sample_rate,
             actual_channels,
@@ -63,15 +66,23 @@ impl AudioPlayback {
         let session = self.session.ok_or(Error::SessionStartFailed)?;
         let context = self.context.as_ref().ok_or(Error::SessionStartFailed)?;
 
-        let context_ptr = Arc::as_ptr(context) as *mut std::ffi::c_void;
+        // Arc::clone で参照カウントをインクリメントし、C 側に所有権を渡す
+        let raw = Arc::into_raw(Arc::clone(context));
         let ret = unsafe {
-            ffi::playback_session_start(session.as_ptr(), Some(playback_callback), context_ptr)
+            ffi::playback_session_start(
+                session.as_ptr(),
+                Some(playback_callback),
+                raw as *mut std::ffi::c_void,
+            )
         };
 
         if ret < 0 {
+            // 失敗した場合は Arc を解放して参照カウントを戻す
+            unsafe { Arc::from_raw(raw) };
             return Err(Error::SessionStartFailed);
         }
 
+        self.context_ptr = Some(raw);
         Ok(())
     }
 
@@ -79,6 +90,10 @@ impl AudioPlayback {
     pub fn stop(&mut self) {
         if let Some(session) = self.session {
             unsafe { ffi::playback_session_stop(session.as_ptr()) };
+            // stop 後は C 側がコールバックを呼ばないため Arc を解放する
+            if let Some(ptr) = self.context_ptr.take() {
+                unsafe { Arc::from_raw(ptr) };
+            }
         }
     }
 
