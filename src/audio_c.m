@@ -4,6 +4,8 @@
 #import <mach/mach_time.h>
 #include <stdatomic.h>
 
+#include <stdatomic.h>
+
 #include "audio_c.h"
 
 // AudioDevice 構造体
@@ -444,6 +446,8 @@ struct AudioSession* audio_session_create(const char* device_id,
         return NULL;
     }
 
+    atomic_init(&session->running, 0);
+
     // デフォルト値の設定
     if (sample_rate <= 0) {
         sample_rate = 48000;
@@ -585,7 +589,7 @@ struct PlaybackSession {
     AudioStreamBasicDescription format;
     AudioPlaybackCallback callback;
     void* user_data;
-    int running;
+    atomic_int running;
 };
 
 static void audio_output_callback(void* user_data,
@@ -593,10 +597,9 @@ static void audio_output_callback(void* user_data,
                                    AudioQueueBufferRef buffer) {
     struct PlaybackSession* session = (struct PlaybackSession*)user_data;
 
-    if (!session->running || !session->callback) {
-        // 無音で埋めて再エンキュー
+    if (!atomic_load(&session->running) || !session->callback) {
+        // running=0 の場合はエンキューしない（AudioQueueStop を待つ）
         memset(buffer->mAudioData, 0, buffer->mAudioDataByteSize);
-        AudioQueueEnqueueBuffer(queue, buffer, 0, NULL);
         return;
     }
 
@@ -634,6 +637,8 @@ struct PlaybackSession* playback_session_create(const char* device_id,
     if (!session) {
         return NULL;
     }
+
+    atomic_init(&session->running, 0);
 
     // デフォルト値の設定
     if (sample_rate <= 0) {
@@ -703,7 +708,7 @@ void playback_session_destroy(struct PlaybackSession* session) {
         return;
     }
 
-    if (session->running) {
+    if (atomic_load(&session->running)) {
         playback_session_stop(session);
     }
 
@@ -718,13 +723,13 @@ int playback_session_start(struct PlaybackSession* session,
         return -1;
     }
 
-    if (session->running) {
+    if (atomic_load(&session->running)) {
         return 0;
     }
 
     session->callback = callback;
     session->user_data = user_data;
-    session->running = 1;
+    atomic_store(&session->running, 1);
 
     // 無音でバッファを初期化してエンキュー
     for (int i = 0; i < 3; i++) {
@@ -733,7 +738,7 @@ int playback_session_start(struct PlaybackSession* session,
         OSStatus status =
             AudioQueueEnqueueBuffer(session->queue, session->buffers[i], 0, NULL);
         if (status != noErr) {
-            session->running = 0;
+            atomic_store(&session->running, 0);
             return -1;
         }
     }
@@ -749,11 +754,11 @@ int playback_session_start(struct PlaybackSession* session,
 }
 
 void playback_session_stop(struct PlaybackSession* session) {
-    if (!session || !session->running) {
+    if (!session || !atomic_load(&session->running)) {
         return;
     }
 
-    session->running = 0;
+    atomic_store(&session->running, 0);
     AudioQueueStop(session->queue, true);
 }
 

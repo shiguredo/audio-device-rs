@@ -157,6 +157,11 @@ impl AudioPlayback {
                 .map_err(|_| Error::SessionStartFailed)?;
         }
 
+        // ワーカースレッドに running フラグを先に立てる。
+        // これによりスレッド起動直後からコールバックが機能し、
+        // 起動と停止の競合状態を防ぐ。
+        context.running.store(true, Ordering::Release);
+
         // 再生に必要なデータをクローン（Send ラッパーで包む）
         let render_client = SendPtr(session.render_client.clone());
         let audio_client = SendPtr(session.audio_client.clone());
@@ -182,10 +187,11 @@ impl AudioPlayback {
                     context_clone,
                 );
             })
-            .map_err(|_| Error::SessionStartFailed)?;
+            .map_err(|_| {
+                context.running.store(false, Ordering::Release);
+                Error::SessionStartFailed
+            })?;
 
-        // スレッド生成成功後に running フラグを立てる
-        context.running.store(true, Ordering::Release);
         self.playback_thread = Some(handle);
 
         Ok(())

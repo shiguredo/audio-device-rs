@@ -349,11 +349,11 @@ static const struct pw_stream_events stream_events = {
 };
 
 // core の done イベント (セッション接続用)
+// ストリーム状態変化 (on_stream_state_changed) でシグナルを送るため、ここでは不要
 static void session_core_done(void* data, uint32_t id, int seq) {
+    (void)data;
     (void)id;
     (void)seq;
-    struct AudioSession* session = data;
-    pw_thread_loop_signal(session->thread_loop, false);
 }
 
 // core の error イベント
@@ -698,11 +698,11 @@ static const struct pw_stream_events playback_stream_events = {
 };
 
 // 再生用 core done イベント
+// ストリーム状態変化 (playback_on_stream_state_changed) でシグナルを送るため、ここでは不要
 static void playback_core_done(void* data, uint32_t id, int seq) {
+    (void)data;
     (void)id;
     (void)seq;
-    struct PlaybackSession* session = data;
-    pw_thread_loop_signal(session->thread_loop, false);
 }
 
 // 再生用 core error イベント
