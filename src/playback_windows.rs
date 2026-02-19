@@ -24,7 +24,6 @@ struct SessionData {
     render_client: IAudioRenderClient,
     event_handle: HANDLE,
     format: AudioFormat,
-    sample_rate: i32,
     channels: i32,
     buffer_frames: u32,
 }
@@ -124,7 +123,6 @@ impl AudioPlayback {
                 render_client,
                 event_handle,
                 format,
-                sample_rate,
                 channels,
                 buffer_frames,
             };
