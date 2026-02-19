@@ -3,7 +3,6 @@
 use std::ffi::CString;
 use std::ptr::NonNull;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::common::{AudioFormat, AudioPlaybackConfig, PlaybackFrame};
 use crate::error::{Error, Result};
@@ -11,7 +10,6 @@ use crate::ffi;
 
 struct PlaybackContext {
     callback: Box<dyn Fn() -> Option<PlaybackFrame> + Send + Sync>,
-    running: AtomicBool,
 }
 /// オーディオ再生
 pub struct AudioPlayback {
@@ -49,7 +47,6 @@ impl AudioPlayback {
 
         let context = Arc::new(PlaybackContext {
             callback: Box::new(callback),
-            running: AtomicBool::new(false),
         });
 
         Ok(Self {
@@ -66,10 +63,6 @@ impl AudioPlayback {
         let session = self.session.ok_or(Error::SessionStartFailed)?;
         let context = self.context.as_ref().ok_or(Error::SessionStartFailed)?;
 
-        if context.running.load(Ordering::Acquire) {
-            return Ok(());
-        }
-
         let context_ptr = Arc::as_ptr(context) as *mut std::ffi::c_void;
         let ret = unsafe {
             ffi::playback_session_start(session.as_ptr(), Some(playback_callback), context_ptr)
@@ -79,19 +72,13 @@ impl AudioPlayback {
             return Err(Error::SessionStartFailed);
         }
 
-        context.running.store(true, Ordering::Release);
         Ok(())
     }
 
     /// 再生を停止
     pub fn stop(&mut self) {
-        if let Some(context) = &self.context
-            && context.running.load(Ordering::Acquire)
-        {
-            if let Some(session) = self.session {
-                unsafe { ffi::playback_session_stop(session.as_ptr()) };
-            }
-            context.running.store(false, Ordering::Release);
+        if let Some(session) = self.session {
+            unsafe { ffi::playback_session_stop(session.as_ptr()) };
         }
     }
 
@@ -123,14 +110,13 @@ impl Drop for AudioPlayback {
 // AudioPlayback はプラットフォーム固有の再生セッションを内部で管理し、
 // コールバックはスレッドセーフな Arc<PlaybackContext> を通じて処理される
 unsafe impl Send for AudioPlayback {}
-unsafe impl Sync for AudioPlayback {}
 
 extern "C" fn playback_callback(
     user_data: *mut std::ffi::c_void,
     buffer: *mut std::ffi::c_void,
     frames: i32,
     channels: i32,
-    _sample_rate: i32,
+    _sample_rate: i32, // FFI シグネチャ上必要だが Rust 側ではフォーマット変換に不要
     format: i32,
 ) -> i32 {
     if user_data.is_null() || buffer.is_null() || frames <= 0 {

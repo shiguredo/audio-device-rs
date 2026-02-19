@@ -746,7 +746,7 @@ int playback_session_start(struct PlaybackSession* session,
     // 再生を開始
     OSStatus status = AudioQueueStart(session->queue, NULL);
     if (status != noErr) {
-        session->running = 0;
+        atomic_store(&session->running, 0);
         return -1;
     }
 
