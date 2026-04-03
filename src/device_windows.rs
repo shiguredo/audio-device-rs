@@ -8,6 +8,21 @@ use windows::{
 
 use crate::error::{Error, Result};
 
+/// COM を MTA モードで初期化する。
+/// 既に MTA で初期化済み (S_FALSE) の場合は成功とする。
+/// 呼び出し元スレッドが STA で初期化済みの場合は RPC_E_CHANGED_MODE が返るため、
+/// エラーとして報告する。
+pub(crate) fn init_com_mta() -> Result<()> {
+    unsafe {
+        let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
+        if hr.is_ok() {
+            Ok(())
+        } else {
+            Err(Error::ComInitFailed)
+        }
+    }
+}
+
 /// オーディオデバイスの種類
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioDeviceType {
@@ -105,10 +120,8 @@ unsafe impl Sync for AudioDeviceList {}
 
 /// 指定されたタイプのデバイスを列挙
 fn enumerate_devices_by_type(device_type: AudioDeviceType) -> Result<Vec<AudioDevice>> {
+    init_com_mta()?;
     unsafe {
-        // COM 初期化 (既に初期化済みの場合も許容する)
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-
         // デバイス列挙子を作成
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
@@ -208,10 +221,8 @@ pub(crate) fn get_device_by_id(
     device_id: Option<&str>,
     device_type: AudioDeviceType,
 ) -> Result<IMMDevice> {
+    init_com_mta()?;
     unsafe {
-        // COM 初期化 (既に初期化済みの場合も許容する)
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-
         // デバイス列挙子を作成
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
