@@ -48,18 +48,18 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
-  slack_notify_failed:
+  slack_notify:
     needs: [github-release, publish]
-    timeout-minutes: 20
-    runs-on: ubuntu-24.04
-    if: failure()
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    if: ${{ !cancelled() }}
+    permissions:
+      actions: read
     steps:
       - name: Slack Notification
-        uses: rtCamp/action-slack-notify@v2
-        env:
-          SLACK_CHANNEL: rust-oss
-          SLACK_COLOR: danger
-          SLACK_ICON_EMOJI: ":japanese_ogre:"
-          SLACK_TITLE: "FAILED"
-          SLACK_MESSAGE: <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|${{github.event.head_commit.message }}>
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        uses: shiguredo/github-actions/.github/actions/slack-notify@main
+        with:
+          status: ${{ job.status }}
+          slack_webhook: ${{ secrets.SLACK_WEBHOOK }}
+          slack_channel: rust-oss
+          notify_mode: all
