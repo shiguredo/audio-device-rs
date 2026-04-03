@@ -460,12 +460,20 @@ fn capture_thread_func(
                     };
 
                     // データサイズを計算
-                    let bytes_per_sample = match format {
+                    let bytes_per_sample: usize = match format {
                         AudioFormat::S16 => 2,
                         AudioFormat::F32 => 4,
                     };
-                    let data_size =
-                        (frames_available as i32 * channels * bytes_per_sample) as usize;
+                    let data_size = match (frames_available as usize)
+                        .checked_mul(channels as usize)
+                        .and_then(|n| n.checked_mul(bytes_per_sample))
+                    {
+                        Some(size) => size,
+                        None => {
+                            let _ = capture_client.ReleaseBuffer(frames_available);
+                            continue;
+                        }
+                    };
 
                     // 無音フラグまたは null ポインタの場合はスキップする
                     let is_silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;

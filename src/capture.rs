@@ -255,7 +255,7 @@ extern "C" fn frame_callback(
     format: i32,
     timestamp_us: i64,
 ) {
-    if user_data.is_null() || data.is_null() || frames <= 0 {
+    if user_data.is_null() || data.is_null() || frames <= 0 || channels <= 0 {
         return;
     }
 
@@ -264,11 +264,16 @@ extern "C" fn frame_callback(
     let context = unsafe { &*(user_data as *const CaptureContext) };
 
     let audio_format = AudioFormat::from_ffi(format);
-    let bytes_per_sample = match audio_format {
+    let bytes_per_sample: usize = match audio_format {
         AudioFormat::S16 => 2,
         AudioFormat::F32 => 4,
     };
-    let data_size = (frames * channels * bytes_per_sample) as usize;
+    let Some(data_size) = (frames as usize)
+        .checked_mul(channels as usize)
+        .and_then(|n| n.checked_mul(bytes_per_sample))
+    else {
+        return;
+    };
     let data_slice = unsafe { std::slice::from_raw_parts(data as *const u8, data_size) };
 
     let frame = AudioFrame {

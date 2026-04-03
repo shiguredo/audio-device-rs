@@ -411,11 +411,20 @@ fn playback_thread_func(
 
             if let Some(frame) = frame_opt {
                 // フレームデータをバッファにコピー
-                let bytes_per_sample = match format {
+                let bytes_per_sample: usize = match format {
                     AudioFormat::S16 => 2,
                     AudioFormat::F32 => 4,
                 };
-                let buffer_size = (frames_available as i32 * channels * bytes_per_sample) as usize;
+                let buffer_size = match (frames_available as usize)
+                    .checked_mul(channels as usize)
+                    .and_then(|n| n.checked_mul(bytes_per_sample))
+                {
+                    Some(size) => size,
+                    None => {
+                        let _ = render_client.ReleaseBuffer(frames_available, 0);
+                        continue;
+                    }
+                };
 
                 // フォーマット変換が必要な場合の処理
                 if frame.format == AudioFormat::F32 && format == AudioFormat::S16 {
