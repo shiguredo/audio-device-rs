@@ -2,6 +2,8 @@
 
 ## develop
 
+- [FIX] Linux の PulseAudio デバイス列挙で `info->name` が NULL の場合に `strdup(NULL)` でクラッシュする問題を修正する
+  - @voluntas
 - [FIX] macOS のデバイス列挙で `malloc` と `CFStringGetCString` の失敗を検証して不正な C 文字列の生成を防止する
   - @voluntas
 - [FIX] PipeWire の process callback で `n_datas` と `chunk` の NULL 検証を追加する
