@@ -55,6 +55,11 @@ static void source_info_callback(pa_context* c, const pa_source_info* info,
         return;
     }
 
+    // name が NULL のデバイスは識別不能なのでスキップする
+    if (!info->name) {
+        return;
+    }
+
     // monitor source（スピーカーのモニタ）を除外する
     if (info->monitor_of_sink != PA_INVALID_INDEX) {
         return;
@@ -103,6 +108,11 @@ static void sink_info_callback(pa_context* c, const pa_sink_info* info,
     }
 
     if (!info) {
+        return;
+    }
+
+    // name が NULL のデバイスは識別不能なのでスキップする
+    if (!info->name) {
         return;
     }
 
