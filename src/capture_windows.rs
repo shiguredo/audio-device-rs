@@ -291,8 +291,6 @@ impl AudioCapture {
                 .map_err(|_| Error::SessionStartFailed)?;
         }
 
-        context.running.store(true, Ordering::Release);
-
         // キャプチャに必要なデータをクローン（Send ラッパーで包む）
         let capture_client = SendPtr(session.capture_client.clone());
         let event_handle = SendHandle(session.event_handle);
@@ -302,17 +300,22 @@ impl AudioCapture {
         let context_clone = Arc::clone(context);
 
         // キャプチャスレッドを開始
-        let handle = thread::spawn(move || {
-            capture_thread_func(
-                capture_client.into_inner(),
-                event_handle.into_inner(),
-                format,
-                sample_rate,
-                channels,
-                context_clone,
-            );
-        });
+        let handle = thread::Builder::new()
+            .name("audio-capture".into())
+            .spawn(move || {
+                capture_thread_func(
+                    capture_client.into_inner(),
+                    event_handle.into_inner(),
+                    format,
+                    sample_rate,
+                    channels,
+                    context_clone,
+                );
+            })
+            .map_err(|_| Error::SessionStartFailed)?;
 
+        // スレッド生成成功後に running フラグを立てる
+        context.running.store(true, Ordering::Release);
         self.capture_thread = Some(handle);
 
         Ok(())

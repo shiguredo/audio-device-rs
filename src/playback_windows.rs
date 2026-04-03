@@ -248,8 +248,6 @@ impl AudioPlayback {
                 .map_err(|_| Error::SessionStartFailed)?;
         }
 
-        context.running.store(true, Ordering::Release);
-
         // 再生に必要なデータをクローン（Send ラッパーで包む）
         let render_client = SendPtr(session.render_client.clone());
         let audio_client = SendPtr(session.audio_client.clone());
@@ -261,19 +259,24 @@ impl AudioPlayback {
         let context_clone = Arc::clone(context);
 
         // 再生スレッドを開始
-        let handle = thread::spawn(move || {
-            playback_thread_func(
-                render_client.into_inner(),
-                audio_client.into_inner(),
-                event_handle.into_inner(),
-                format,
-                sample_rate,
-                channels,
-                buffer_frames,
-                context_clone,
-            );
-        });
+        let handle = thread::Builder::new()
+            .name("audio-playback".into())
+            .spawn(move || {
+                playback_thread_func(
+                    render_client.into_inner(),
+                    audio_client.into_inner(),
+                    event_handle.into_inner(),
+                    format,
+                    sample_rate,
+                    channels,
+                    buffer_frames,
+                    context_clone,
+                );
+            })
+            .map_err(|_| Error::SessionStartFailed)?;
 
+        // スレッド生成成功後に running フラグを立てる
+        context.running.store(true, Ordering::Release);
         self.playback_thread = Some(handle);
 
         Ok(())
