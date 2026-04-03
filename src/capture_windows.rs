@@ -48,7 +48,17 @@ impl<'a> AudioFrame<'a> {
         if self.format != AudioFormat::S16 {
             return None;
         }
-        let len = (self.frames * self.channels) as usize;
+        if self.frames <= 0 || self.channels <= 0 {
+            return None;
+        }
+        let len = (self.frames as usize) * (self.channels as usize);
+        let required_bytes = len * std::mem::size_of::<i16>();
+        if self.data.len() < required_bytes {
+            return None;
+        }
+        if !(self.data.as_ptr() as usize).is_multiple_of(std::mem::align_of::<i16>()) {
+            return None;
+        }
         Some(unsafe { std::slice::from_raw_parts(self.data.as_ptr() as *const i16, len) })
     }
 
@@ -57,7 +67,17 @@ impl<'a> AudioFrame<'a> {
         if self.format != AudioFormat::F32 {
             return None;
         }
-        let len = (self.frames * self.channels) as usize;
+        if self.frames <= 0 || self.channels <= 0 {
+            return None;
+        }
+        let len = (self.frames as usize) * (self.channels as usize);
+        let required_bytes = len * std::mem::size_of::<f32>();
+        if self.data.len() < required_bytes {
+            return None;
+        }
+        if !(self.data.as_ptr() as usize).is_multiple_of(std::mem::align_of::<f32>()) {
+            return None;
+        }
         Some(unsafe { std::slice::from_raw_parts(self.data.as_ptr() as *const f32, len) })
     }
 }
@@ -94,20 +114,18 @@ impl AudioFrameOwned {
 
     /// S16 フォーマットとしてデータを取得
     pub fn as_s16(&self) -> Option<&[i16]> {
-        if self.format != AudioFormat::S16 {
-            return None;
-        }
-        let len = (self.frames * self.channels) as usize;
-        Some(unsafe { std::slice::from_raw_parts(self.data.as_ptr() as *const i16, len) })
+        self.as_frame().as_s16().map(|s| {
+            // SAFETY: as_frame() は self.data を参照しており、self の借用中は有効
+            unsafe { std::slice::from_raw_parts(s.as_ptr(), s.len()) }
+        })
     }
 
     /// F32 フォーマットとしてデータを取得
     pub fn as_f32(&self) -> Option<&[f32]> {
-        if self.format != AudioFormat::F32 {
-            return None;
-        }
-        let len = (self.frames * self.channels) as usize;
-        Some(unsafe { std::slice::from_raw_parts(self.data.as_ptr() as *const f32, len) })
+        self.as_frame().as_f32().map(|s| {
+            // SAFETY: as_frame() は self.data を参照しており、self の借用中は有効
+            unsafe { std::slice::from_raw_parts(s.as_ptr(), s.len()) }
+        })
     }
 }
 
@@ -444,13 +462,15 @@ fn capture_thread_func(
                     let data_size =
                         (frames_available as i32 * channels * bytes_per_sample) as usize;
 
-                    let data = if !data_ptr.is_null() && data_size > 0 {
-                        std::slice::from_raw_parts(data_ptr, data_size)
-                    } else {
-                        &[]
-                    };
+                    // 無音フラグまたは null ポインタの場合はスキップする
+                    let is_silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
+                    if is_silent || data_ptr.is_null() || data_size == 0 {
+                        let _ = capture_client.ReleaseBuffer(frames_available);
+                        continue;
+                    }
 
-                    // 無音フラグの場合はスキップしない（データを渡す）
+                    let data = std::slice::from_raw_parts(data_ptr, data_size);
+
                     let frame = AudioFrame {
                         data,
                         frames: frames_available as i32,
