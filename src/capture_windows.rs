@@ -195,10 +195,8 @@ impl AudioCapture {
     where
         F: Fn(AudioFrame<'_>) + Send + Sync + 'static,
     {
+        crate::device_windows::init_com_mta()?;
         unsafe {
-            // COM 初期化 (既に初期化済みの場合も許容する)
-            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-
             // デバイスを取得（キャプチャなので入力デバイス）
             let device = get_device_by_id(config.device_id.as_deref(), AudioDeviceType::Input)?;
 
@@ -404,7 +402,8 @@ fn capture_thread_func(
     context: Arc<CaptureContext>,
 ) {
     unsafe {
-        // スレッドでも COM 初期化
+        // ワーカースレッドの COM 参照カウント追加。
+        // MTA はプロセス全体で共有されるため、呼び出し元で検証済みなら失敗しない。
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
 
         // タイムスタンプ用のパフォーマンスカウンタ

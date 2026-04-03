@@ -144,10 +144,8 @@ impl AudioPlayback {
     where
         F: Fn() -> Option<PlaybackFrame> + Send + Sync + 'static,
     {
+        crate::device_windows::init_com_mta()?;
         unsafe {
-            // COM 初期化 (既に初期化済みの場合も許容する)
-            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-
             // デバイスを取得（再生なので出力デバイス）
             let device = get_device_by_id(config.device_id.as_deref(), AudioDeviceType::Output)?;
 
@@ -372,7 +370,8 @@ fn playback_thread_func(
     context: Arc<PlaybackContext>,
 ) {
     unsafe {
-        // スレッドでも COM 初期化
+        // ワーカースレッドの COM 参照カウント追加。
+        // MTA はプロセス全体で共有されるため、呼び出し元で検証済みなら失敗しない。
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
 
         while context.running.load(Ordering::Acquire) {
@@ -434,9 +433,10 @@ fn playback_thread_func(
                     let dst_s16 =
                         std::slice::from_raw_parts_mut(data_ptr as *mut i16, buffer_size / 2);
                     let copy_len = src_count.min(dst_s16.len());
-                    for i in 0..copy_len {
-                        let sample = (frame.data.as_ptr() as *const f32).add(i).read_unaligned();
-                        dst_s16[i] = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                    let src_ptr = frame.data.as_ptr() as *const f32;
+                    for (i, dst) in dst_s16.iter_mut().enumerate().take(copy_len) {
+                        let sample = src_ptr.add(i).read_unaligned();
+                        *dst = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
                     }
                     // 残りを無音で埋める
                     dst_s16[copy_len..].fill(0);
@@ -447,9 +447,10 @@ fn playback_thread_func(
                     let dst_f32 =
                         std::slice::from_raw_parts_mut(data_ptr as *mut f32, buffer_size / 4);
                     let copy_len = src_count.min(dst_f32.len());
-                    for i in 0..copy_len {
-                        let sample = (frame.data.as_ptr() as *const i16).add(i).read_unaligned();
-                        dst_f32[i] = sample as f32 / 32768.0;
+                    let src_ptr = frame.data.as_ptr() as *const i16;
+                    for (i, dst) in dst_f32.iter_mut().enumerate().take(copy_len) {
+                        let sample = src_ptr.add(i).read_unaligned();
+                        *dst = sample as f32 / 32768.0;
                     }
                     // 残りを無音で埋める
                     dst_f32[copy_len..].fill(0.0);
