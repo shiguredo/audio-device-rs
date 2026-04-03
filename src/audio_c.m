@@ -2,6 +2,7 @@
 #import <CoreAudio/CoreAudio.h>
 #import <Foundation/Foundation.h>
 #import <mach/mach_time.h>
+#include <stdatomic.h>
 
 #include "audio_c.h"
 
@@ -21,7 +22,7 @@ struct AudioSession {
     AudioStreamBasicDescription format;
     AudioFrameCallback callback;
     void* user_data;
-    int running;
+    atomic_int running;
 };
 
 static void audio_input_callback(void* user_data,
