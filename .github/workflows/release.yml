@@ -62,4 +62,4 @@ jobs:
           status: ${{ job.status }}
           slack_webhook: ${{ secrets.SLACK_WEBHOOK }}
           slack_channel: rust-oss
-          notify_mode: all
+          notify_mode: failure_and_fixed
