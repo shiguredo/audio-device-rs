@@ -169,7 +169,12 @@ impl SendHandle {
 }
 
 struct SendPtr<T>(T);
-unsafe impl<T> Send for SendPtr<T> {}
+
+// Safety: IAudioCaptureClient は COM の MTA (COINIT_MULTITHREADED) で初期化しており、
+// MTA オブジェクトはスレッド間で安全に移送できる。
+// blanket impl ではなく使用する具体型のみに Send を実装する。
+unsafe impl Send for SendPtr<IAudioCaptureClient> {}
+
 impl<T> SendPtr<T> {
     fn into_inner(self) -> T {
         self.0
@@ -480,7 +485,9 @@ fn capture_thread_func(
                         timestamp_us,
                     };
 
-                    (context.callback)(frame);
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        (context.callback)(frame);
+                    }));
                 }
 
                 let _ = capture_client.ReleaseBuffer(frames_available);
