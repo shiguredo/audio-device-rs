@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    paths-ignore:
+      - "**.md"
+  schedule:
+    # JST 11:00 (UTC 02:00), 月-金
+    - cron: "0 2 * * 1-5"
+
+jobs:
+  ci:
+    name: CI (${{ matrix.name }})
+    strategy:
+      matrix:
+        include:
+          - name: Ubuntu (pulse)
+            os: ubuntu-24.04
+            cargo-flags: ""
+          - name: Ubuntu (pipewire)
+            os: ubuntu-24.04
+            cargo-flags: "--no-default-features --features pipewire"
+          - name: Ubuntu ARM (pulse)
+            os: ubuntu-24.04-arm
+            cargo-flags: ""
+          - name: macOS
+            os: macos-26
+            cargo-flags: ""
+          - name: Windows
+            os: windows-2025
+            cargo-flags: ""
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+      - run: rustup update stable
+      - uses: shiguredo/github-actions/.github/actions/rust-cache@main
+        with:
+          os: ${{ matrix.os }}
+          toolchain: stable
+      - name: Install Linux dependencies (pulse)
+        if: runner.os == 'Linux' && !contains(matrix.cargo-flags, 'pipewire')
+        run: sudo apt-get update && sudo apt-get install -y libpulse-dev libclang-dev
+      - name: Install Linux dependencies (pipewire)
+        if: runner.os == 'Linux' && contains(matrix.cargo-flags, 'pipewire')
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev libclang-dev
+      - run: cargo fmt --all --check
+      - run: cargo check --workspace ${{ matrix.cargo-flags }}
+      - run: cargo test --workspace ${{ matrix.cargo-flags }}
+      - run: cargo clippy --workspace ${{ matrix.cargo-flags }} -- -D warnings
+
+  device-test:
+    name: Device Test (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            runner: [self-hosted, X64, N150, Windows]
+          - name: Linux
+            runner: [self-hosted, Linux, X64, NVIDIA-Video-Codec-SDK]
+          - name: macOS
+            runner: [self-hosted, macOS, ARM64, Apple-M1]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+      - name: Add cargo to PATH (Linux/macOS)
+        if: runner.os == 'Linux' || runner.os == 'macOS'
+        run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      - name: Set audio environment (Linux)
+        if: runner.os == 'Linux'
+        run: echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> $GITHUB_ENV
+      - name: Add cargo to PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: echo %USERPROFILE%\.cargo\bin>> "%GITHUB_PATH%"
+      - run: rustup update stable
+      - run: cargo test --workspace
+      - name: Run device_list
+        run: >
+          cargo run --example device_list | jq -e
+          '.device_count > 0
+          and .device_count == (.devices | length)
+          and (.devices | all(.name | length > 0))
+          and (.devices | all(.unique_id | length > 0))
+          and (.devices | all(.channels > 0 and .sample_rate > 0))'
+      - name: Run device_info
+        run: >
+          cargo run --example device_info | jq -e
+          '.statistics.device_count > 0
+          and .statistics.device_count == (.devices | length)
+          and .statistics.input_count + .statistics.output_count == .statistics.device_count
+          and (.devices | all(.name | length > 0))
+          and (.devices | all(.unique_id | length > 0))
+          and (.devices | all(.channels > 0 and .sample_rate > 0))'
+
+  slack_notify:
+    needs: [ci, device-test]
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    if: ${{ !cancelled() }}
+    permissions:
+      actions: read
+    steps:
+      - name: Slack Notification
+        uses: shiguredo/github-actions/.github/actions/slack-notify@main
+        with:
+          status: ${{ job.status }}
+          slack_webhook: ${{ secrets.SLACK_WEBHOOK }}
+          slack_channel: rust-oss
+          notify_mode: failure_and_fixed

@@ -1,0 +1,9 @@
+[package]
+name = "pbt"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dev-dependencies]
+proptest = "1"
+shiguredo_audio_device = { path = "..", default-features = false }
