@@ -1,6 +1,6 @@
 [package]
 name = "shiguredo_audio_device"
-version = "2026.1.0-canary.3"
+version = "2026.1.0"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Shiguredo Inc."]
@@ -10,6 +10,7 @@ homepage = "https://github.com/shiguredo/audio-device-rs"
 repository = "https://github.com/shiguredo/audio-device-rs"
 readme = "README.md"
 build = "build.rs"
+include = ["/src/**", "/build.rs", "/LICENSE", "/README.md"]
 
 [dependencies]
 
