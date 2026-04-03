@@ -51,8 +51,8 @@ impl<'a> AudioFrame<'a> {
         if self.frames <= 0 || self.channels <= 0 {
             return None;
         }
-        let len = (self.frames as usize) * (self.channels as usize);
-        let required_bytes = len * std::mem::size_of::<i16>();
+        let len = (self.frames as usize).checked_mul(self.channels as usize)?;
+        let required_bytes = len.checked_mul(std::mem::size_of::<i16>())?;
         if self.data.len() < required_bytes {
             return None;
         }
@@ -70,8 +70,8 @@ impl<'a> AudioFrame<'a> {
         if self.frames <= 0 || self.channels <= 0 {
             return None;
         }
-        let len = (self.frames as usize) * (self.channels as usize);
-        let required_bytes = len * std::mem::size_of::<f32>();
+        let len = (self.frames as usize).checked_mul(self.channels as usize)?;
+        let required_bytes = len.checked_mul(std::mem::size_of::<f32>())?;
         if self.data.len() < required_bytes {
             return None;
         }
