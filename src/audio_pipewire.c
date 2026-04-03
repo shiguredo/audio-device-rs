@@ -282,7 +282,8 @@ static void on_process(void* userdata) {
     }
 
     struct spa_buffer* spa_buf = buf->buffer;
-    if (!spa_buf->datas[0].data) {
+    if (spa_buf->n_datas < 1 || !spa_buf->datas[0].data ||
+        !spa_buf->datas[0].chunk) {
         pw_stream_queue_buffer(session->stream, buf);
         return;
     }
@@ -472,6 +473,13 @@ int audio_session_start(struct AudioSession* session,
         pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio",
                           PW_KEY_MEDIA_CATEGORY, "Capture",
                           PW_KEY_MEDIA_ROLE, "Communication", NULL);
+    if (!props) {
+        pw_core_disconnect(session->core);
+        session->core = NULL;
+        pw_thread_loop_unlock(session->thread_loop);
+        pw_thread_loop_stop(session->thread_loop);
+        return -4;
+    }
 
     if (session->device_id) {
         pw_properties_set(props, PW_KEY_TARGET_OBJECT,

@@ -2,6 +2,10 @@
 
 ## develop
 
+- [FIX] PipeWire の process callback で `n_datas` と `chunk` の NULL 検証を追加する
+  - @voluntas
+- [FIX] PipeWire の `pw_properties_new` 失敗時の NULL チェックを追加する
+  - @voluntas
 - [FIX] FFI コールバックの `channels` 未検証とバッファサイズ計算の符号付きオーバーフローを修正する
   - @voluntas
 - [FIX] `pbt` クレートの default-features が pipewire ビルドで feature 競合を起こす問題を修正する
