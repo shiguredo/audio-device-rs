@@ -112,7 +112,13 @@ impl SendHandle {
 }
 
 struct SendPtr<T>(T);
-unsafe impl<T> Send for SendPtr<T> {}
+
+// Safety: IAudioRenderClient / IAudioClient は COM の MTA (COINIT_MULTITHREADED) で初期化しており、
+// MTA オブジェクトはスレッド間で安全に移送できる。
+// blanket impl ではなく使用する具体型のみに Send を実装する。
+unsafe impl Send for SendPtr<IAudioRenderClient> {}
+unsafe impl Send for SendPtr<IAudioClient> {}
+
 impl<T> SendPtr<T> {
     fn into_inner(self) -> T {
         self.0
@@ -393,7 +399,9 @@ fn playback_thread_func(
             }
 
             // コールバックからデータを取得
-            let frame_opt = (context.callback)();
+            let frame_opt =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (context.callback)()))
+                    .unwrap_or(None);
 
             // バッファを取得
             let data_ptr = match render_client.GetBuffer(frames_available) {
@@ -412,29 +420,27 @@ fn playback_thread_func(
                 // フォーマット変換が必要な場合の処理
                 if frame.format == AudioFormat::F32 && format == AudioFormat::S16 {
                     // F32 -> S16 変換
-                    let src_f32 = std::slice::from_raw_parts(
-                        frame.data.as_ptr() as *const f32,
-                        frame.data.len() / 4,
-                    );
+                    // Vec<u8> のアライメントは 1 なので read_unaligned で読み取る
+                    let src_count = frame.data.len() / 4;
                     let dst_s16 =
                         std::slice::from_raw_parts_mut(data_ptr as *mut i16, buffer_size / 2);
-                    let copy_len = src_f32.len().min(dst_s16.len());
+                    let copy_len = src_count.min(dst_s16.len());
                     for i in 0..copy_len {
-                        dst_s16[i] = (src_f32[i] * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                        let sample = (frame.data.as_ptr() as *const f32).add(i).read_unaligned();
+                        dst_s16[i] = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
                     }
                     // 残りを無音で埋める
                     dst_s16[copy_len..].fill(0);
                 } else if frame.format == AudioFormat::S16 && format == AudioFormat::F32 {
                     // S16 -> F32 変換
-                    let src_s16 = std::slice::from_raw_parts(
-                        frame.data.as_ptr() as *const i16,
-                        frame.data.len() / 2,
-                    );
+                    // Vec<u8> のアライメントは 1 なので read_unaligned で読み取る
+                    let src_count = frame.data.len() / 2;
                     let dst_f32 =
                         std::slice::from_raw_parts_mut(data_ptr as *mut f32, buffer_size / 4);
-                    let copy_len = src_s16.len().min(dst_f32.len());
+                    let copy_len = src_count.min(dst_f32.len());
                     for i in 0..copy_len {
-                        dst_f32[i] = src_s16[i] as f32 / 32768.0;
+                        let sample = (frame.data.as_ptr() as *const i16).add(i).read_unaligned();
+                        dst_f32[i] = sample as f32 / 32768.0;
                     }
                     // 残りを無音で埋める
                     dst_f32[copy_len..].fill(0.0);
