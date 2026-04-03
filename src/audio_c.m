@@ -154,16 +154,34 @@ static int add_device_to_array(struct AudioDevice*** deviceArray,
             CFStringGetLength(deviceName), kCFStringEncodingUTF8) +
         1;
     device->name = (char*)malloc(nameLength);
-    CFStringGetCString(deviceName, device->name, nameLength,
-                        kCFStringEncodingUTF8);
+    if (!device->name) {
+        free(device);
+        return -1;
+    }
+    if (!CFStringGetCString(deviceName, device->name, nameLength,
+                             kCFStringEncodingUTF8)) {
+        free(device->name);
+        free(device);
+        return -1;
+    }
 
     CFIndex uidLength =
         CFStringGetMaximumSizeForEncoding(CFStringGetLength(deviceUID),
                                            kCFStringEncodingUTF8) +
         1;
     device->unique_id = (char*)malloc(uidLength);
-    CFStringGetCString(deviceUID, device->unique_id, uidLength,
-                        kCFStringEncodingUTF8);
+    if (!device->unique_id) {
+        free(device->name);
+        free(device);
+        return -1;
+    }
+    if (!CFStringGetCString(deviceUID, device->unique_id, uidLength,
+                             kCFStringEncodingUTF8)) {
+        free(device->unique_id);
+        free(device->name);
+        free(device);
+        return -1;
+    }
 
     device->channels = channels > 0 ? channels : 2;
     device->sample_rate = sample_rate > 0 ? sample_rate : 48000;
