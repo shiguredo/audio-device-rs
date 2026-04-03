@@ -34,6 +34,9 @@ default = ["pulse"]
 pulse = []
 pipewire = []
 
+[workspace]
+members = [".", "pbt"]
+
 [dev-dependencies]
 nojson = "0.3"
 

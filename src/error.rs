@@ -5,6 +5,7 @@ pub enum Error {
     SessionCreateFailed,
     SessionStartFailed,
     NullPointer(&'static str),
+    InvalidChannels,
 }
 
 impl std::fmt::Display for Error {
@@ -15,6 +16,7 @@ impl std::fmt::Display for Error {
             Error::SessionCreateFailed => write!(f, "failed to create audio session"),
             Error::SessionStartFailed => write!(f, "failed to start audio session"),
             Error::NullPointer(name) => write!(f, "null pointer: {}", name),
+            Error::InvalidChannels => write!(f, "invalid channels: must be greater than 0"),
         }
     }
 }

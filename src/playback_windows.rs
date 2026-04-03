@@ -29,35 +29,41 @@ pub struct PlaybackFrame {
 
 impl PlaybackFrame {
     /// S16 データから PlaybackFrame を作成
-    pub fn from_s16(data: &[i16], channels: i32, sample_rate: i32) -> Self {
+    pub fn from_s16(data: &[i16], channels: i32, sample_rate: i32) -> Result<Self> {
+        if channels <= 0 {
+            return Err(Error::InvalidChannels);
+        }
         let frames = data.len() as i32 / channels;
         let bytes: Vec<u8> = data
             .iter()
             .flat_map(|&sample| sample.to_le_bytes())
             .collect();
-        Self {
+        Ok(Self {
             data: bytes,
             frames,
             channels,
             sample_rate,
             format: AudioFormat::S16,
-        }
+        })
     }
 
     /// F32 データから PlaybackFrame を作成
-    pub fn from_f32(data: &[f32], channels: i32, sample_rate: i32) -> Self {
+    pub fn from_f32(data: &[f32], channels: i32, sample_rate: i32) -> Result<Self> {
+        if channels <= 0 {
+            return Err(Error::InvalidChannels);
+        }
         let frames = data.len() as i32 / channels;
         let bytes: Vec<u8> = data
             .iter()
             .flat_map(|&sample| sample.to_le_bytes())
             .collect();
-        Self {
+        Ok(Self {
             data: bytes,
             frames,
             channels,
             sample_rate,
             format: AudioFormat::F32,
-        }
+        })
     }
 }
 
