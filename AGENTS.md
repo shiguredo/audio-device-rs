@@ -1,6 +1,7 @@
 # AGENTS
 
 - Premature Optimization is the Root of All Evil
+- 一切妥協をしないこと
 - 一切忖度しないこと
 - 常に日本語を利用すること
 - 全角と半角の間には半角スペースを入れること
@@ -42,12 +43,22 @@
   - 例: `0001-bug-fix-parse-error.md`
   - 例: `0002-fmt-enhance-support-for-joins.md`
 - 仕様的に対応が難しい場合は issues/pending/ へ移動すること
+- issue を作成したらコミットすること
+- issue をコミットするときはコミットメッセージに issue の番号とタイトルを記載すること
 - 1 issue 完了ごとに 1 コミットすること
 - Issue の作成日はファイルのタイトルの後に `Created: YYYY-MM-DD` として記載すること
 - Issue の完了日はファイルのタイトルの後に `Completed: YYYY-MM-DD` として記載すること
 - Issue を作成した LLM の Model と Version をファイルのタイトルの後に `Model: <model-name> <version>` として記載すること
   - Opus 4.6 や GPT-5.4 など
 - Issue はなぜこの対応が必要なのかの根拠を明確にすること
+
+### git ブランチの命名規則
+
+- Git Flow を使うこと
+- バグ修正は prefix を `feature/fix-` でブランチを切って対応すること
+- 機能追加は prefix を `feature/add-` でブランチを切って対応すること
+- 後方互換のない変更は prefix を `feature/change-` でブランチを切って対応すること
+- ブランチ名に issue の番号を含めないこと
 
 ### issue が実は解決してなかった場合
 
@@ -72,6 +83,51 @@
 - issues/pending に移動するときは issue ファイルに pending にした理由を明記すること
 - pending の issue は修正せずそのまま残す（close しない）
 
+## テストについて
+
+- pbt 以下に unittest を書かないこと
+- unittest は pbt で実現できないものだけを書くこと
+- 単体テストのファイル名は `tests/test_<module>.rs` とし、`src/<module>.rs` に対応させること
+- PBT のファイル名は `pbt/tests/prop_<module>.rs` とし、`src/<module>.rs` に対応させること
+- 特定のモジュールに対応しないテストには `test_` や `prop_` プレフィックスを付けないこと
+- `#[ignore]` を使わないこと
+- テストファイルが長くなった場合はファイル内で `mod` を使って分割すること
+  - テストが長くなるのはモジュール自体が大きすぎるサインなので `src/<module>.rs` 側の分割を検討すること
+- `src/<module>/` のようにディレクトリモジュールの場合は `pbt/tests/prop_<module>/main.rs` にサブモジュール対応で分割すること
+
+### テストの役割分担
+
+- PBT: 型情報（Strategy）に基づいて入力を生成し、プロパティを検証する（ラウンドトリップ等）
+- Fuzzing: 任意入力に対するクラッシュ耐性（パニック安全性）
+- 単体テスト: 意図的なエラーパス、境界値など PBT で実現できないケース
+- PBT でカバーできるものを単体テストで書かない
+
+### カバレッジ駆動のテスト作成手順
+
+1. 対象モジュールの PBT + 単体テストのカバレッジを llvm-cov で取得する
+2. 未カバー行を分類する:
+   - 正常系ロジック未カバー → PBT の strategy を修正または PBT を追加する
+   - エラーパス未カバー → 単体テストまたは fuzzing で対応する
+   - 到達不可能なコード → デッドコードとして削除する
+3. PBT に「任意入力でパニックしないことだけを検証するテスト」を書かない（fuzzing の役割）
+
+### カバレッジ取得コマンド例
+
+対象モジュールに関連するテストだけを実行し、カバレッジをマージして確認する:
+
+```bash
+# 前回の計測結果をクリアする
+cargo llvm-cov clean --workspace
+# src/<module>.rs 内の #[cfg(test)] mod tests を実行する
+cargo llvm-cov --no-report -p {crate} --lib -- <module>
+# tests/test_<module>.rs の単体テストを実行する
+cargo llvm-cov --no-report -p {crate} --test test_<module>
+# pbt/tests/prop_<module>.rs の PBT を実行する
+cargo llvm-cov --no-report -p {crate} --test prop_<module>
+# 上記すべての計測結果をマージしてレポートを出力する
+cargo llvm-cov report
+```
+
 ## 変更履歴について
 
 - 変更履歴は `CHANGES.md` に記載すること
@@ -92,3 +148,13 @@
 ## Rust
 
 - 性能より堅牢性を優先すること
+- 依存は最小限にすること
+- draft 由来の機能を実装する場合は、根拠資料名、節番号、将来変更される可能性があることをコードコメントで明記すること
+- PBT(Property-Based Testing) や Fuzzing でテストを行うこと
+- PBT は proptest を使うこと
+- Fuzzing は cargo-fuzz を使うこと
+- HTTP/1.1 は shiguredo_http11 を使うこと
+- TLS は rustls を使う事
+- 非同期処理は tokio を使うこと
+- ログはできるだけださないが、使う場合は log を使うこと
+- 暗号ライブラリは aws-lc-rs を使うこと
