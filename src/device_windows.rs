@@ -6,6 +6,7 @@ use windows::{
     Win32::UI::Shell::PropertiesSystem::*, core::*,
 };
 
+use crate::common::{AudioDeviceType, AudioFormat};
 use crate::error::{Error, Result};
 
 /// COM を MTA モードで初期化する。
@@ -21,24 +22,6 @@ pub(crate) fn init_com_mta() -> Result<()> {
             Err(Error::ComInitFailed)
         }
     }
-}
-
-/// オーディオデバイスの種類
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AudioDeviceType {
-    /// 入力デバイス（マイク）
-    Input,
-    /// 出力デバイス（スピーカー）
-    Output,
-}
-
-/// オーディオフォーマット
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AudioFormat {
-    /// Signed 16-bit integer
-    S16,
-    /// 32-bit float
-    F32,
 }
 
 #[derive(Debug)]

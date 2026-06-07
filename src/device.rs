@@ -1,17 +1,9 @@
 use std::ffi::CStr;
 use std::ptr::NonNull;
 
+use crate::common::{AudioDeviceType, AudioFormat};
 use crate::error::{Error, Result};
 use crate::ffi;
-
-/// オーディオデバイスの種類
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AudioDeviceType {
-    /// 入力デバイス（マイク）
-    Input,
-    /// 出力デバイス（スピーカー）
-    Output,
-}
 
 impl AudioDeviceType {
     fn from_ffi(device_type: i32) -> Self {
@@ -20,15 +12,6 @@ impl AudioDeviceType {
             _ => AudioDeviceType::Input,
         }
     }
-}
-
-/// オーディオフォーマット
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AudioFormat {
-    /// Signed 16-bit integer
-    S16,
-    /// 32-bit float
-    F32,
 }
 
 impl AudioFormat {
