@@ -40,10 +40,12 @@ static void audio_input_callback(void* user_data,
         if (start_time->mFlags & kAudioTimeStampHostTimeValid) {
             // ホストタイムをナノ秒に変換してからマイクロ秒に
             mach_timebase_info_data_t timebase;
-            mach_timebase_info(&timebase);
-            uint64_t nanos =
-                start_time->mHostTime * timebase.numer / timebase.denom;
-            timestamp_us = (int64_t)(nanos / 1000);
+            kern_return_t r = mach_timebase_info(&timebase);
+            if (r == KERN_SUCCESS) {
+              uint64_t nanos =
+                  start_time->mHostTime * timebase.numer / timebase.denom;
+              timestamp_us = (int64_t)(nanos / 1000);
+            }
         }
 
         int format = (session->format.mBitsPerChannel == 16) ? AUDIO_FORMAT_S16
