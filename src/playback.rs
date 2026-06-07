@@ -2,82 +2,8 @@
 //!
 //! 現在未実装
 
-use crate::device::AudioFormat;
+use crate::common::{AudioPlaybackConfig, PlaybackFrame};
 use crate::error::{Error, Result};
-
-/// 再生用オーディオフレームデータ
-pub struct PlaybackFrame {
-    /// PCM データ
-    pub data: Vec<u8>,
-    /// サンプルフレーム数
-    pub frames: i32,
-    /// チャンネル数
-    pub channels: i32,
-    /// サンプルレート
-    pub sample_rate: i32,
-    /// オーディオフォーマット
-    pub format: AudioFormat,
-}
-
-impl PlaybackFrame {
-    /// S16 データから PlaybackFrame を作成
-    pub fn from_s16(data: &[i16], channels: i32, sample_rate: i32) -> Result<Self> {
-        if channels <= 0 {
-            return Err(Error::InvalidChannels);
-        }
-        let frames = data.len() as i32 / channels;
-        let bytes: Vec<u8> = data
-            .iter()
-            .flat_map(|&sample| sample.to_le_bytes())
-            .collect();
-        Ok(Self {
-            data: bytes,
-            frames,
-            channels,
-            sample_rate,
-            format: AudioFormat::S16,
-        })
-    }
-
-    /// F32 データから PlaybackFrame を作成
-    pub fn from_f32(data: &[f32], channels: i32, sample_rate: i32) -> Result<Self> {
-        if channels <= 0 {
-            return Err(Error::InvalidChannels);
-        }
-        let frames = data.len() as i32 / channels;
-        let bytes: Vec<u8> = data
-            .iter()
-            .flat_map(|&sample| sample.to_le_bytes())
-            .collect();
-        Ok(Self {
-            data: bytes,
-            frames,
-            channels,
-            sample_rate,
-            format: AudioFormat::F32,
-        })
-    }
-}
-
-/// オーディオ再生設定
-pub struct AudioPlaybackConfig {
-    /// デバイス ID（None の場合はデフォルトデバイス）
-    pub device_id: Option<String>,
-    /// サンプルレート（0 の場合はデバイスのデフォルト）
-    pub sample_rate: i32,
-    /// チャンネル数（0 の場合はデバイスのデフォルト）
-    pub channels: i32,
-}
-
-impl Default for AudioPlaybackConfig {
-    fn default() -> Self {
-        Self {
-            device_id: None,
-            sample_rate: 48000,
-            channels: 2,
-        }
-    }
-}
 
 /// オーディオ再生
 ///
