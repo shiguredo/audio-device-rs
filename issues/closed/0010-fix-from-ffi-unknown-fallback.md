@@ -1,6 +1,7 @@
 # from_ffi() の未知の値に対する無条件フォールバックを修正する
 
 Created: 2026-06-07
+Completed: 2026-06-08
 Model: deepseek-v4-pro
 Polished: 2026-06-07
 
@@ -134,3 +135,13 @@ let audio_format = match AudioFormat::from_ffi(format) {
   - 既知の定数値が正しいバリアントにマッピングされること
   - 未知の値が `Err` を返すこと（複数の任意値で確認）
 - `AudioFormat::from_ffi` は `pub(crate)` のため、fuzzing ターゲットとして `cargo-fuzz` に追加し、任意の `i32` 入力でパニックしないことを検証する
+
+## 解決方法
+
+- `src/error.rs` に `UnknownFormat(i32)` と `UnknownDeviceType(i32)` の Error バリアントを追加した
+- `AudioDeviceType::from_ffi()` の戻り型を `Self` から `Result<Self>` に変更し、未知の値に対して `Err(Error::UnknownDeviceType(other))` を返すようにした
+- `AudioFormat::from_ffi()` の戻り型を `Self` から `Result<Self>` に変更し、未知の値に対して `Err(Error::UnknownFormat(other))` を返すようにした
+- `enumerate_internal()` 内の `map` を `and_then` に置き換え、`from_ffi` が `Err` を返したデバイスをスキップするようにした
+- `capture.rs` の `frame_callback` 内で `from_ffi` が `Err` を返した場合は早期 return して処理を打ち切るようにした
+- 既知の定数値と未知の値に対する単体テストを `src/device.rs` の `#[cfg(test)] mod tests` に追加した
+- `CHANGES.md` に [FIX] エントリを追記した
