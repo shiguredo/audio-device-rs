@@ -11,6 +11,8 @@
 
 ## develop
 
+- [FIX] from_ffi() が未知の FFI 定数値を無条件に Input/S16 へ丸め込む問題を修正する
+  - @melpon
 
 ### misc
 

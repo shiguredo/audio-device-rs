@@ -127,7 +127,10 @@ extern "C" fn frame_callback(
     // context の生存期間は AudioCapture によって保証される
     let context = unsafe { &*(user_data as *const CaptureContext) };
 
-    let audio_format = AudioFormat::from_ffi(format);
+    let audio_format = match AudioFormat::from_ffi(format) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
     let bytes_per_sample: usize = match audio_format {
         AudioFormat::S16 => 2,
         AudioFormat::F32 => 4,
