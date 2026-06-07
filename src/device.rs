@@ -40,6 +40,7 @@ impl AudioFormat {
     }
 }
 
+#[derive(Debug)]
 pub struct AudioDevice {
     raw: NonNull<ffi::AudioDevice>,
     device_type: AudioDeviceType,

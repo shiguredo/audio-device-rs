@@ -41,6 +41,7 @@ pub enum AudioFormat {
     F32,
 }
 
+#[derive(Debug)]
 /// オーディオデバイス
 pub struct AudioDevice {
     name: String,
