@@ -56,7 +56,7 @@ static void audio_input_callback(void* user_data,
     }
 
     // バッファを再エンキュー
-    if (session->running) {
+    if (atomic_load(&session->running)) {
         AudioQueueEnqueueBuffer(queue, buffer, 0, NULL);
     }
 }
@@ -509,7 +509,7 @@ void audio_session_destroy(struct AudioSession* session) {
         return;
     }
 
-    if (session->running) {
+    if (atomic_load(&session->running)) {
         audio_session_stop(session);
     }
 
@@ -524,20 +524,20 @@ int audio_session_start(struct AudioSession* session,
         return -1;
     }
 
-    if (session->running) {
+    if (atomic_load(&session->running)) {
         return 0;
     }
 
     session->callback = callback;
     session->user_data = user_data;
-    session->running = 1;
+    atomic_store(&session->running, 1);
 
     // バッファをエンキュー
     for (int i = 0; i < 3; i++) {
         OSStatus status =
             AudioQueueEnqueueBuffer(session->queue, session->buffers[i], 0, NULL);
         if (status != noErr) {
-            session->running = 0;
+            atomic_store(&session->running, 0);
             return -1;
         }
     }
@@ -545,7 +545,7 @@ int audio_session_start(struct AudioSession* session,
     // キャプチャを開始
     OSStatus status = AudioQueueStart(session->queue, NULL);
     if (status != noErr) {
-        session->running = 0;
+        atomic_store(&session->running, 0);
         return -1;
     }
 
@@ -553,11 +553,11 @@ int audio_session_start(struct AudioSession* session,
 }
 
 void audio_session_stop(struct AudioSession* session) {
-    if (!session || !session->running) {
+    if (!session || !atomic_load(&session->running)) {
         return;
     }
 
-    session->running = 0;
+    atomic_store(&session->running, 0);
     AudioQueueStop(session->queue, true);
 }
 
