@@ -8,6 +8,7 @@ pub enum Error {
     ComInitFailed,
     NullPointer(&'static str),
     InvalidChannels,
+    DataTooLarge,
     UnknownFormat(i32),
     UnknownDeviceType(i32),
 }
