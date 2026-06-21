@@ -13,6 +13,7 @@ arbitrary = { version = "1", features = ["derive"] }
 
 [dependencies.shiguredo_audio_device]
 path = ".."
+default-features = false
 
 [[bin]]
 name = "audio_frame_as_s16"
