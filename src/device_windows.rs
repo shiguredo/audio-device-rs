@@ -4,11 +4,32 @@ use windows::{
     Win32::Devices::FunctionDiscovery::*, Win32::Media::Audio::*,
     Win32::Media::KernelStreaming::*, Win32::Media::Multimedia::*,
     Win32::System::Com::StructuredStorage::*, Win32::System::Com::*, Win32::System::Variant::*,
-    Win32::UI::Shell::PropertiesSystem::*, core::*,
+    Win32::UI::Shell::PropertiesSystem::*, Win32::Foundation::*, core::*,
 };
 
 use crate::common::{AudioDeviceType, AudioFormat};
 use crate::error::{Error, Result};
+
+/// Send でない型をスレッドに渡すためのラッパー（MTA で初期化済みのため安全）
+pub(crate) struct SendHandle(pub(crate) HANDLE);
+unsafe impl Send for SendHandle {}
+impl SendHandle {
+    pub(crate) fn into_inner(self) -> HANDLE {
+        self.0
+    }
+}
+
+pub(crate) struct SendPtr<T>(pub(crate) T);
+
+// Safety: COM オブジェクトは MTA (COINIT_MULTITHREADED) で初期化しており、
+// MTA オブジェクトはスレッド間で安全に移送できる。
+// 各具体型に対する unsafe impl Send は、利用側（capture_windows.rs, playback_windows.rs）で宣言する。
+
+impl<T> SendPtr<T> {
+    pub(crate) fn into_inner(self) -> T {
+        self.0
+    }
+}
 
 /// COM を MTA モードで初期化する。
 /// 既に MTA で初期化済み (S_FALSE) の場合は成功とする。

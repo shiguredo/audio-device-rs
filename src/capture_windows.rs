@@ -12,7 +12,7 @@ use windows::{
 };
 
 use crate::common::{AudioDeviceType, AudioFormat, AudioFrame, AudioCaptureConfig, CaptureContext};
-use crate::device_windows::get_device_by_id;
+use crate::device_windows::{get_device_by_id, SendHandle, SendPtr};
 use crate::error::{Error, Result};
 
 struct SessionData {
@@ -24,27 +24,9 @@ struct SessionData {
     channels: i32,
 }
 
-/// Send でない型をスレッドに渡すためのラッパー（MTA で初期化済みのため安全）
-struct SendHandle(HANDLE);
-unsafe impl Send for SendHandle {}
-impl SendHandle {
-    fn into_inner(self) -> HANDLE {
-        self.0
-    }
-}
-
-struct SendPtr<T>(T);
-
 // Safety: IAudioCaptureClient は COM の MTA (COINIT_MULTITHREADED) で初期化しており、
 // MTA オブジェクトはスレッド間で安全に移送できる。
-// blanket impl ではなく使用する具体型のみに Send を実装する。
 unsafe impl Send for SendPtr<IAudioCaptureClient> {}
-
-impl<T> SendPtr<T> {
-    fn into_inner(self) -> T {
-        self.0
-    }
-}
 
 pub struct AudioCapture {
     session: Option<SessionData>,
