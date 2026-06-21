@@ -19,6 +19,8 @@
   - @melpon
 - [FIX] PlaybackFrame::from_s16/from_f32 での usize から i32 へのキャストによる整数オーバーフローを防止する
   - @melpon
+- [FIX] pw_init の戻り値未チェックを修正する
+  - @melpon
 
 ### misc
 
