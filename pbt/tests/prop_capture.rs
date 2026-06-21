@@ -1,31 +1,6 @@
 use proptest::prelude::*;
 use shiguredo_audio_device::{AudioFormat, AudioFrameOwned};
 
-fn arb_audio_format() -> impl Strategy<Value = AudioFormat> {
-    prop_oneof![Just(AudioFormat::S16), Just(AudioFormat::F32),]
-}
-
-fn arb_audio_frame_owned() -> impl Strategy<Value = AudioFrameOwned> {
-    (
-        proptest::collection::vec(any::<u8>(), 0..=1024),
-        -10i32..=256,
-        -10i32..=32,
-        prop_oneof![Just(8000), Just(16000), Just(44100), Just(48000)],
-        arb_audio_format(),
-        any::<i64>(),
-    )
-        .prop_map(
-            |(data, frames, channels, sample_rate, format, timestamp_us)| AudioFrameOwned {
-                data,
-                frames,
-                channels,
-                sample_rate,
-                format,
-                timestamp_us,
-            },
-        )
-}
-
 fn arb_valid_s16_frame() -> impl Strategy<Value = AudioFrameOwned> {
     (1i32..=128, 1i32..=8).prop_flat_map(|(frames, channels)| {
         let sample_count = (frames as usize) * (channels as usize);
@@ -67,17 +42,6 @@ fn arb_valid_f32_frame() -> impl Strategy<Value = AudioFrameOwned> {
 }
 
 proptest! {
-    /// 任意の AudioFrameOwned に対して as_s16() / as_f32() が panic しない
-    #[test]
-    fn as_s16_never_panics(frame in arb_audio_frame_owned()) {
-        let _ = frame.as_s16();
-    }
-
-    #[test]
-    fn as_f32_never_panics(frame in arb_audio_frame_owned()) {
-        let _ = frame.as_f32();
-    }
-
     /// 正しく構築された S16 フレームは as_s16() が Some を返す
     #[test]
     fn valid_s16_frame_returns_some(frame in arb_valid_s16_frame()) {

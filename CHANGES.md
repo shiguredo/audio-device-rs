@@ -26,6 +26,8 @@
 
 ### misc
 
+- [FIX] PBT から「パニックしないこと」のみを検証するテストを削除する
+  - @melpon
 - [UPDATE] プラットフォーム間で重複していた共通型を src/common.rs に抽出する
   - @melpon
 
