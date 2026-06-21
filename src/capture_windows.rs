@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use windows::{
-    Win32::Foundation::*, Win32::Media::Audio::*, Win32::Media::KernelStreaming::*,
-    Win32::Media::Multimedia::*, Win32::System::Com::*, Win32::System::Performance::*,
+    Win32::Foundation::*, Win32::Media::Audio::*, Win32::System::Com::*,
+    Win32::System::Performance::*,
     Win32::System::Threading::*,
 };
 
@@ -78,7 +78,7 @@ impl AudioCapture {
             // フォーマット情報を取得
             let sample_rate = (*mix_format).nSamplesPerSec as i32;
             let channels = (*mix_format).nChannels as i32;
-            let format = determine_audio_format(mix_format);
+            let format = crate::device_windows::determine_audio_format(mix_format);
 
             // イベントハンドルを作成
             let event_handle =
@@ -240,25 +240,6 @@ impl Drop for AudioCapture {
 
 unsafe impl Send for AudioCapture {}
 unsafe impl Sync for AudioCapture {}
-
-/// オーディオフォーマットを判定
-unsafe fn determine_audio_format(wave_format: *const WAVEFORMATEX) -> AudioFormat {
-    let format_tag = unsafe { (*wave_format).wFormatTag };
-
-    if format_tag == WAVE_FORMAT_IEEE_FLOAT as u16 {
-        return AudioFormat::F32;
-    }
-
-    if format_tag == WAVE_FORMAT_EXTENSIBLE as u16 {
-        let ext = wave_format as *const WAVEFORMATEXTENSIBLE;
-        let sub_format = unsafe { std::ptr::addr_of!((*ext).SubFormat).read_unaligned() };
-        if sub_format == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
-            return AudioFormat::F32;
-        }
-    }
-
-    AudioFormat::S16
-}
 
 /// キャプチャスレッド関数
 fn capture_thread_func(

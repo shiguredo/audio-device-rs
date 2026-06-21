@@ -26,6 +26,8 @@
 
 ### misc
 
+- [FIX] determine_audio_format の重複定義を統合する
+  - @melpon
 - [FIX] examples のエラーメッセージを日本語から英語に修正する
   - @melpon
 - [FIX] PBT から「パニックしないこと」のみを検証するテストを削除する
