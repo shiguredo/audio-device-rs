@@ -1,6 +1,7 @@
 # Error 型の PBT テストを追加する
 
 Created: 2026-06-07
+Completed: 2026-06-21
 Model: deepseek-v4-pro
 Polished: 2026-06-07
 
@@ -87,3 +88,15 @@ proptest! {
 - [ADD] Error 型の PBT テストを追加する
   - @ユーザー名
 ```
+
+## 解決方法
+
+`pbt/tests/prop_error.rs` を新設し、以下の PBT テスト 3 件を実装した:
+
+- `display_is_non_empty`: 全 Error バリアントの Display 出力が空でないことを検証する
+- `null_pointer_contains_value`: NullPointer の Display 出力にパラメータが正しく反映されることを検証する
+- `source_is_none`: 全 Error バリアントの `Error::source()` が常に `None` を返すことを検証する
+
+strategy ではすべてのバリアント (`DeviceNotFound`, `DeviceAccessDenied`, `SessionCreateFailed`, `SessionStartFailed`, `InvalidChannels`, `DataTooLarge`, `UnknownFormat`, `UnknownDeviceType`, `NullPointer`) を生成し、`#[cfg(target_os = "windows")]` で `ComInitFailed` を条件付きで含めている。
+
+`CHANGES.md` の `### misc` サブセクションに `[ADD]` エントリを追記した。
