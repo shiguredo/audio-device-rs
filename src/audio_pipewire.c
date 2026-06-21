@@ -108,7 +108,17 @@ static void enum_registry_global(void* data, uint32_t id,
     }
 
     device->name = strdup(node_description ? node_description : node_name);
+    if (!device->name) {
+        free(device);
+        return;
+    }
+
     device->unique_id = strdup(node_name);
+    if (!device->unique_id) {
+        free(device->name);
+        free(device);
+        return;
+    }
 
     // チャンネル数とサンプルレートはプロパティから取得を試みる
     const char* channels_str =
