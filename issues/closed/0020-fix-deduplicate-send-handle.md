@@ -1,6 +1,7 @@
 # SendHandle / SendPtr の重複定義を共通化する
 
 Created: 2026-06-07
+Completed: 2026-06-21
 Model: deepseek-v4-pro
 Polished: 2026-06-07
 
@@ -77,3 +78,15 @@ impl<T> SendPtr<T> {
 - [FIX] SendHandle / SendPtr の重複定義を共通化する
   - @ユーザー名
 ```
+
+## 解決方法
+
+`src/device_windows.rs` に `SendHandle` と `SendPtr<T>` の `pub(crate)` 共通定義を追加し、
+`capture_windows.rs` および `playback_windows.rs` の重複定義を削除した。
+各ファイルでは型固有の `unsafe impl Send for SendPtr<...>` のみを残し、
+`use crate::device_windows::{SendHandle, SendPtr};` で共通定義を参照するようにした。
+
+- `src/device_windows.rs`: `SendHandle` / `SendPtr<T>` の共通定義を追加、`Win32::Foundation::*` の import を追加
+- `src/capture_windows.rs`: 重複定義を削除、`unsafe impl Send for SendPtr<IAudioCaptureClient>` のみ残す
+- `src/playback_windows.rs`: 重複定義を削除、`unsafe impl Send for SendPtr<IAudioRenderClient>` / `unsafe impl Send for SendPtr<IAudioClient>` のみ残す
+- `CHANGES.md`: `### misc` にエントリを追記
