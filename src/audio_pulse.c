@@ -237,6 +237,10 @@ int audio_enumerate_devices(struct AudioDevice*** devices, int* count) {
 
     // source 列挙が完了するまで待機する
     while (enum_ctx.done < 1) {
+        pa_context_state_t state = pa_context_get_state(context);
+        if (state == PA_CONTEXT_FAILED || state == PA_CONTEXT_TERMINATED) {
+            break;
+        }
         if (pa_mainloop_iterate(mainloop, 1, &ret) < 0) {
             break;
         }
@@ -258,6 +262,10 @@ int audio_enumerate_devices(struct AudioDevice*** devices, int* count) {
 
     // sink 列挙が完了するまで待機する
     while (enum_ctx.done < 2) {
+        pa_context_state_t state = pa_context_get_state(context);
+        if (state == PA_CONTEXT_FAILED || state == PA_CONTEXT_TERMINATED) {
+            break;
+        }
         if (pa_mainloop_iterate(mainloop, 1, &ret) < 0) {
             break;
         }
