@@ -1,6 +1,7 @@
 # determine_audio_format の重複定義を統合する
 
 Created: 2026-06-07
+Completed: 2026-06-21
 Model: deepseek-v4-pro
 Polished: 2026-06-07
 
@@ -67,3 +68,10 @@ pub(crate) unsafe fn determine_audio_format(wave_format: *const WAVEFORMATEX) ->
 - [FIX] determine_audio_format の重複定義を統合する
   - @ユーザー名
 ```
+
+## 解決方法
+
+- `src/device_windows.rs` に `pub(crate) unsafe fn determine_audio_format()` を追加した
+- `src/capture_windows.rs` の同名関数と `src/playback_windows.rs` の `determine_playback_format()` を削除し、それぞれ `crate::device_windows::determine_audio_format()` を呼ぶように変更した
+- 不要になった import (`Win32::Media::KernelStreaming::*`, `Win32::Media::Multimedia::*`) を両ファイルから削除した
+- `CHANGES.md` にエントリを追記した
