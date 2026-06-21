@@ -3,6 +3,7 @@
 Created: 2026-06-07
 Model: deepseek-v4-pro
 Polished: 2026-06-20
+Completed: 2026-06-21
 
 ## カテゴリ
 
@@ -227,3 +228,17 @@ fuzz_target!(|data: &[u8]| {
 - [FIX] PlaybackFrame::from_s16/from_f32 での usize から i32 へのキャストによる整数オーバーフローを防止する
   - @melpon
 ```
+
+## 解決方法
+
+以下の変更を行い、完了条件をすべて満たした:
+
+- `src/error.rs`: `DataTooLarge` を unit バリアントから `DataTooLarge(std::num::TryFromIntError)` に変更し、`Display` 実装の match アームを追加してコンパイルエラーを解消した。`From<std::num::TryFromIntError> for Error` を実装し `?` によるエラー伝播を可能にした
+- `src/common.rs`: `from_s16` / `from_f32` の `data.len() as i32 / channels` を `i32::try_from(data.len())? / channels` に置き換え、オーバーフロー時に `Error::DataTooLarge` を返すようにした
+- `pbt/tests/prop_playback.rs`: 期待値計算の `as i32` を `i32::try_from` ベースに修正した
+- `tests/test_common.rs` を新規作成し、`i32::MAX + 1` 長の dangling スライスを用いた境界値テスト 3 件を追加した
+- `fuzz/Cargo.toml` と `fuzz/fuzz_targets/playback_frame.rs` を新規作成し、cargo-fuzz による fuzz ターゲットを追加した
+- `Cargo.toml`: workspace members に `fuzz` を追加した
+- `CHANGES.md`: `## develop` に `[FIX]` エントリを追記した
+
+全テスト（PBT 10件、単体テスト 7件）がパスし、fuzz クレートも警告ゼロでビルドできることを確認した。
