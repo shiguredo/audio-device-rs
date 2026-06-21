@@ -1,9 +1,9 @@
 # pw_init の戻り値チェックを追加する
 
 Created: 2026-06-07
-Completed: 2026-06-21
 Model: deepseek-v4-pro
 Polished: 2026-06-07
+Reopened: 2026-06-22
 
 ## カテゴリ
 
@@ -64,3 +64,27 @@ if (err < 0) {
 - `audio_session_create()` (385 行目): `pw_init(NULL, NULL)` の戻り値が負の場合は session を free して `NULL` を返す
 
 `pw_init()` は複数回呼び出しても安全（PipeWire 0.3 では参照カウント方式）なため、静的フラグによる 1 回制限は導入せず、既存の呼び出しパターンを維持した。
+
+## reopened にした理由
+
+本 issue の修正（`pw_init()` の戻り値が負ならエラーを返す）を適用した結果、以下のコンパイルエラーが発生した:
+
+```
+error: void value not ignored as it ought to be
+  173 |     if (pw_init(NULL, NULL) < 0) {
+      |         ^~~~~~~~~~~~~~~~~~~
+```
+
+原因は issue の根拠そのものが誤っていたためである。`pw_init()` の戻り値型は **存在する全バージョンで `void`** であり、`int` を返すバージョンは一度も存在しない:
+
+- PipeWire 0.2.0（最初期）: `void pw_init(int *argc, char **argv[])`
+- PipeWire 0.2.5: `void pw_init(int *argc, char **argv[])`
+- PipeWire 0.3.0: `void pw_init(int *argc, char **argv[])`
+- PipeWire 1.0.5: `void pw_init(int *argc, char **argv[])`
+- PipeWire 1.6.7（最新ドキュメント）: `void pw_init(int *argc, char **argv[])`
+
+以上の調査により、「`pw_init()` は `int` を返し、失敗時は負の errno 値となる」という本 issue の根拠は完全な誤情報（LLM のハルシネーション）であり、元のコード（戻り値チェックなし）が正しかったことが判明した。
+
+### 修正内容
+
+2 箇所の `pw_init()` 呼び出しの戻り値チェックを revert し、元の `pw_init(NULL, NULL);` に戻した。
