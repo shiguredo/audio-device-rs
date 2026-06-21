@@ -1,6 +1,7 @@
 # PulseAudio デバイス列挙でコンテキスト切断時に無限ループするのを防ぐ
 
 Created: 2026-06-07
+Completed: 2026-06-21
 Model: deepseek-v4-pro
 Polished: 2026-06-07
 
@@ -59,3 +60,7 @@ while (enum_ctx.done < EXPECTED) {
 - PulseAudio サーバの停止を伴うテストは CI 環境で再現が困難なため、単体テストは行わない
 - コードレビューによるロジックの検証を主とする
 - 手動での動作確認: デバイス列挙中に PulseAudio を `pulseaudio --kill` で停止させ、無限ループに陥らないことを確認する
+
+## 解決方法
+
+`src/audio_pulse.c` の `audio_enumerate_devices()` 内、source 列挙待機ループ（行 239-247）と sink 列挙待機ループ（行 264-272）に `pa_context_get_state(context)` によるコンテキスト状態チェックを追加した。`PA_CONTEXT_FAILED` または `PA_CONTEXT_TERMINATED` の場合はループを脱出する。これにより PulseAudio サーバが列挙中に切断・クラッシュした場合でも無限ループに陥らずに関数が復帰する。`CHANGES.md` に修正エントリを追記した。
