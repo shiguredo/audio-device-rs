@@ -84,8 +84,19 @@ static void source_info_callback(pa_context* c, const pa_source_info* info,
 
     // description を表示名として使用する
     device->name = strdup(info->description ? info->description : info->name);
+    if (!device->name) {
+        free(device);
+        return;
+    }
+
     // PulseAudio の source name を一意識別子として使用する
     device->unique_id = strdup(info->name);
+    if (!device->unique_id) {
+        free(device->name);
+        free(device);
+        return;
+    }
+
     device->channels =
         info->sample_spec.channels > 0 ? info->sample_spec.channels : 1;
     device->sample_rate =
@@ -134,7 +145,18 @@ static void sink_info_callback(pa_context* c, const pa_sink_info* info,
     }
 
     device->name = strdup(info->description ? info->description : info->name);
+    if (!device->name) {
+        free(device);
+        return;
+    }
+
     device->unique_id = strdup(info->name);
+    if (!device->unique_id) {
+        free(device->name);
+        free(device);
+        return;
+    }
+
     device->channels =
         info->sample_spec.channels > 0 ? info->sample_spec.channels : 2;
     device->sample_rate =

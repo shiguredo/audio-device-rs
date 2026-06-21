@@ -11,6 +11,8 @@
 
 ## develop
 
+- [FIX] C コード内の strdup 戻り値 NULL チェック欠落を修正する
+  - @melpon
 - [FIX] from_ffi() が未知の FFI 定数値を無条件に Input/S16 へ丸め込む問題を修正する
   - @melpon
 - [FIX] PlaybackFrame::from_s16/from_f32 での usize から i32 へのキャストによる整数オーバーフローを防止する
