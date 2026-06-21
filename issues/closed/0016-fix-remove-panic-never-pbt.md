@@ -1,6 +1,7 @@
 # PBT から「パニックしないこと」だけを検証するテストを削除する
 
 Created: 2026-06-07
+Completed: 2026-06-21
 Model: deepseek-v4-pro
 Polished: 2026-06-07
 
@@ -43,3 +44,15 @@ CLAUDE.md は以下を明記している:
 - [FIX] PBT から「パニックしないこと」のみを検証するテストを削除する
   - @ユーザー名
 ```
+
+## 解決方法
+
+`pbt/tests/prop_capture.rs` から以下のテスト関数と依存する未使用ヘルパー関数を削除した:
+
+- `as_s16_never_panics` — 任意入力で `as_s16()` がパニックしないことのみを検証する PBT（fuzzing の責務）
+- `as_f32_never_panics` — 任意入力で `as_f32()` がパニックしないことのみを検証する PBT（fuzzing の責務）
+- `arb_audio_frame_owned` — 上記テストでのみ使用されていた未使用ヘルパー
+- `arb_audio_format` — `arb_audio_frame_owned` でのみ使用されていた未使用ヘルパー
+
+パニック安全性の検証は `fuzz/fuzz_targets/audio_frame_as_s16.rs` でカバーされている。
+CHANGES.md の `### misc` に `[FIX]` エントリを追記した。
