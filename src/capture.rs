@@ -3,7 +3,7 @@ use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::common::{AudioFormat, AudioFrame, AudioCaptureConfig, CaptureContext};
+use crate::common::{AudioCaptureConfig, AudioFormat, AudioFrame, CaptureContext};
 use crate::error::{Error, Result};
 use crate::ffi;
 

@@ -3,8 +3,8 @@
 //! このクレートは macOS、Linux (PipeWire)、Windows (WASAPI) をサポートしています。
 //! 音声キャプチャ（マイク入力）と音声再生（スピーカー出力）の機能を提供します。
 
-mod error;
 mod common;
+mod error;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod capture;

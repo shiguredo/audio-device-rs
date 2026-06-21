@@ -1,10 +1,10 @@
 //! Windows 用オーディオデバイス列挙 (WASAPI)
 
 use windows::{
-    Win32::Devices::FunctionDiscovery::*, Win32::Media::Audio::*,
+    Win32::Devices::FunctionDiscovery::*, Win32::Foundation::*, Win32::Media::Audio::*,
     Win32::Media::KernelStreaming::*, Win32::Media::Multimedia::*,
     Win32::System::Com::StructuredStorage::*, Win32::System::Com::*, Win32::System::Variant::*,
-    Win32::UI::Shell::PropertiesSystem::*, Win32::Foundation::*, core::*,
+    Win32::UI::Shell::PropertiesSystem::*, core::*,
 };
 
 use crate::common::{AudioDeviceType, AudioFormat};

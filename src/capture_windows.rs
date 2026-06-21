@@ -7,12 +7,11 @@ use std::thread;
 
 use windows::{
     Win32::Foundation::*, Win32::Media::Audio::*, Win32::System::Com::*,
-    Win32::System::Performance::*,
-    Win32::System::Threading::*,
+    Win32::System::Performance::*, Win32::System::Threading::*,
 };
 
-use crate::common::{AudioDeviceType, AudioFormat, AudioFrame, AudioCaptureConfig, CaptureContext};
-use crate::device_windows::{get_device_by_id, SendHandle, SendPtr};
+use crate::common::{AudioCaptureConfig, AudioDeviceType, AudioFormat, AudioFrame, CaptureContext};
+use crate::device_windows::{SendHandle, SendPtr, get_device_by_id};
 use crate::error::{Error, Result};
 
 struct SessionData {
