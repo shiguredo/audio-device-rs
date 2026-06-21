@@ -174,7 +174,7 @@ impl PlaybackFrame {
         if channels <= 0 {
             return Err(Error::InvalidChannels);
         }
-        let frames = data.len() as i32 / channels;
+        let frames = i32::try_from(data.len())? / channels;
         let bytes: Vec<u8> = data
             .iter()
             .flat_map(|&sample| sample.to_le_bytes())
@@ -193,7 +193,7 @@ impl PlaybackFrame {
         if channels <= 0 {
             return Err(Error::InvalidChannels);
         }
-        let frames = data.len() as i32 / channels;
+        let frames = i32::try_from(data.len())? / channels;
         let bytes: Vec<u8> = data
             .iter()
             .flat_map(|&sample| sample.to_le_bytes())
