@@ -170,9 +170,7 @@ int audio_enumerate_devices(struct AudioDevice*** devices, int* count) {
     *devices = NULL;
     *count = 0;
 
-    if (pw_init(NULL, NULL) < 0) {
-        return -5;
-    }
+    pw_init(NULL, NULL);
 
     struct EnumerateContext ctx = {0};
 
@@ -382,10 +380,7 @@ struct AudioSession* audio_session_create(const char* device_id, int sample_rate
         return NULL;
     }
 
-    if (pw_init(NULL, NULL) < 0) {
-        free(session);
-        return NULL;
-    }
+    pw_init(NULL, NULL);
 
     // デフォルト値の設定
     if (sample_rate <= 0) {
