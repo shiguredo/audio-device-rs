@@ -1,6 +1,7 @@
 # Fuzzing ターゲットを追加する
 
 Created: 2026-06-07
+Completed: 2026-06-21
 Model: deepseek-v4-pro
 Polished: 2026-06-07
 
@@ -129,3 +130,13 @@ fuzz_target!(|data: (Vec<f32>, i32, i32)| {
 - [ADD] cargo-fuzz を用いた fuzzing ターゲットを追加する
   - @ユーザー名
 ```
+
+## 解決方法
+
+- `fuzz/Cargo.toml` に `arbitrary` 依存を追加し、`[[bin]]` エントリを新規 3 ターゲット用に更新した
+- 旧 `fuzz/fuzz_targets/playback_frame.rs` を削除し、以下 3 つの fuzz ターゲットを新規作成した:
+  - `fuzz/fuzz_targets/audio_frame_as_s16.rs` — `AudioFrameOwned::as_s16()` および `as_f32()` を fuzz
+  - `fuzz/fuzz_targets/playback_frame_from_s16.rs` — `PlaybackFrame::from_s16()` を fuzz
+  - `fuzz/fuzz_targets/playback_frame_from_f32.rs` — `PlaybackFrame::from_f32()` を fuzz
+- Makefile に `fuzz: fuzzing` エイリアスを追加した
+- `cargo +nightly fuzz check` および `cargo clippy --workspace -- -D warnings` が通過することを確認した
