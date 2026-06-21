@@ -1,6 +1,7 @@
 # pw_init の戻り値チェックを追加する
 
 Created: 2026-06-07
+Completed: 2026-06-21
 Model: deepseek-v4-pro
 Polished: 2026-06-07
 
@@ -54,3 +55,12 @@ if (err < 0) {
 
 - PipeWire デーモンが利用不可能な環境でのテストは CI で再現が困難なため、コードレビューによる検証を主とする
 - 通常の PipeWire 環境でデバイス列挙とセッション作成が引き続き正常に動作することを手動で確認する
+
+## 解決方法
+
+`src/audio_pipewire.c` の 2 箇所の `pw_init()` 呼び出しに対して戻り値チェックを追加した。
+
+- `audio_enumerate_devices()` (173 行目): `pw_init(NULL, NULL)` の戻り値が負の場合は `-5` を返す
+- `audio_session_create()` (385 行目): `pw_init(NULL, NULL)` の戻り値が負の場合は session を free して `NULL` を返す
+
+`pw_init()` は複数回呼び出しても安全（PipeWire 0.3 では参照カウント方式）なため、静的フラグによる 1 回制限は導入せず、既存の呼び出しパターンを維持した。
