@@ -8,7 +8,7 @@ pub enum Error {
     ComInitFailed,
     NullPointer(&'static str),
     InvalidChannels,
-    DataTooLarge,
+    DataTooLarge(std::num::TryFromIntError),
     UnknownFormat(i32),
     UnknownDeviceType(i32),
 }
@@ -27,6 +27,7 @@ impl std::fmt::Display for Error {
             ),
             Error::NullPointer(name) => write!(f, "null pointer: {}", name),
             Error::InvalidChannels => write!(f, "invalid channels: must be greater than 0"),
+            Error::DataTooLarge(e) => write!(f, "data too large: {}", e),
             Error::UnknownFormat(v) => write!(f, "unknown audio format: {}", v),
             Error::UnknownDeviceType(v) => write!(f, "unknown audio device type: {}", v),
         }
@@ -34,5 +35,11 @@ impl std::fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+impl From<std::num::TryFromIntError> for Error {
+    fn from(e: std::num::TryFromIntError) -> Self {
+        Error::DataTooLarge(e)
+    }
+}
 
 pub type Result<T> = std::result::Result<T, Error>;

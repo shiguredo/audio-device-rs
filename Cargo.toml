@@ -12,7 +12,7 @@ build = "build.rs"
 include = ["/LICENSE", "/README.md", "/build.rs", "/src/**"]
 
 [workspace]
-members = ["pbt"]
+members = ["pbt", "fuzz"]
 
 # 依存を最小化する方針のため、ランタイム依存は持たない
 [dependencies]

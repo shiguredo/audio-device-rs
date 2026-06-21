@@ -1,0 +1,20 @@
+[package]
+name = "shiguredo_audio_device-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.shiguredo_audio_device]
+path = ".."
+
+[[bin]]
+name = "playback_frame"
+path = "fuzz_targets/playback_frame.rs"
+test = false
+doc = false
