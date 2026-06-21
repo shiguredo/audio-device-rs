@@ -32,7 +32,8 @@
   - @melpon
 - [UPDATE] プラットフォーム間で重複していた共通型を src/common.rs に抽出する
   - @melpon
-
+- [ADD] Error 型の PBT テストを追加する
+  - @melpon
 
 ## 2026.1.0
 
