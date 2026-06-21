@@ -3,6 +3,7 @@
 Created: 2026-06-07
 Model: deepseek-v4-pro
 Polished: 2026-06-07
+Completed: 2026-06-21
 
 ## カテゴリ
 
@@ -41,3 +42,7 @@ stderr への出力はエラーメッセージに該当するため、英語で�
 - [FIX] examples のエラーメッセージを日本語から英語に修正する
   - @ユーザー名
 ```
+
+## 解決方法
+
+`examples/device_info.rs` と `examples/device_list.rs` の `eprintln!("デバイスの列挙に失敗しました: {e}")` を `eprintln!("Failed to enumerate devices: {e}")` に変更した。`CHANGES.md` の `### misc` にエントリを追記した。
