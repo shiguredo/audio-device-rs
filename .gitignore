@@ -6,3 +6,6 @@ target/
 
 # macOS
 .DS_Store
+
+/fuzz/corpus
+/fuzz/artifacts

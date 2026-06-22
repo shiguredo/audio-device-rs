@@ -3,6 +3,7 @@
 //! このクレートは macOS、Linux (PipeWire)、Windows (WASAPI) をサポートしています。
 //! 音声キャプチャ（マイク入力）と音声再生（スピーカー出力）の機能を提供します。
 
+mod common;
 mod error;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -21,18 +22,23 @@ mod device_windows;
 #[cfg(target_os = "windows")]
 mod playback_windows;
 
+pub use common::{
+    AudioCaptureConfig, AudioDeviceType, AudioFormat, AudioFrame, AudioFrameOwned,
+    AudioPlaybackConfig, PlaybackFrame,
+};
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use capture::{AudioCapture, AudioCaptureConfig, AudioFrame, AudioFrameOwned};
+pub use capture::AudioCapture;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use device::{AudioDevice, AudioDeviceList, AudioDeviceType, AudioFormat};
+pub use device::{AudioDevice, AudioDeviceList};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use playback::{AudioPlayback, AudioPlaybackConfig, PlaybackFrame};
+pub use playback::AudioPlayback;
 
 #[cfg(target_os = "windows")]
-pub use capture_windows::{AudioCapture, AudioCaptureConfig, AudioFrame, AudioFrameOwned};
+pub use capture_windows::AudioCapture;
 #[cfg(target_os = "windows")]
-pub use device_windows::{AudioDevice, AudioDeviceList, AudioDeviceType, AudioFormat};
+pub use device_windows::{AudioDevice, AudioDeviceList};
 #[cfg(target_os = "windows")]
-pub use playback_windows::{AudioPlayback, AudioPlaybackConfig, PlaybackFrame};
+pub use playback_windows::AudioPlayback;
 
 pub use error::{Error, Result};

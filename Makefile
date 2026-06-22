@@ -13,6 +13,8 @@ pbt-with-cover:
 	cargo llvm-cov -p pbt --tests
 
 # Fuzzing を全ターゲットで逐次実行する（fork 数はコア数に応じて自動調整）
+fuzz: fuzzing
+
 fuzzing:
 	@FORKS=$$(( $$(nproc) - 2 )); \
 	if [ $$FORKS -lt 1 ]; then FORKS=1; fi; \

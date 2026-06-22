@@ -4,7 +4,7 @@ fn main() {
     let device_list = match AudioDeviceList::enumerate() {
         Ok(list) => list,
         Err(e) => {
-            eprintln!("デバイスの列挙に失敗しました: {e}");
+            eprintln!("Failed to enumerate devices: {e}");
             std::process::exit(1);
         }
     };

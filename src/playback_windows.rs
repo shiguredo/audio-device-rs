@@ -6,86 +6,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use windows::{
-    Win32::Foundation::*, Win32::Media::Audio::*, Win32::Media::KernelStreaming::*,
-    Win32::Media::Multimedia::*, Win32::System::Com::*, Win32::System::Threading::*,
+    Win32::Foundation::*, Win32::Media::Audio::*, Win32::System::Com::*,
+    Win32::System::Threading::*,
 };
 
-use crate::device_windows::{AudioDeviceType, AudioFormat, get_device_by_id};
+use crate::common::{AudioDeviceType, AudioFormat, AudioPlaybackConfig, PlaybackFrame};
+use crate::device_windows::{SendHandle, SendPtr, get_device_by_id};
 use crate::error::{Error, Result};
-
-/// 再生用オーディオフレームデータ
-pub struct PlaybackFrame {
-    /// PCM データ
-    pub data: Vec<u8>,
-    /// サンプルフレーム数
-    pub frames: i32,
-    /// チャンネル数
-    pub channels: i32,
-    /// サンプルレート
-    pub sample_rate: i32,
-    /// オーディオフォーマット
-    pub format: AudioFormat,
-}
-
-impl PlaybackFrame {
-    /// S16 データから PlaybackFrame を作成
-    pub fn from_s16(data: &[i16], channels: i32, sample_rate: i32) -> Result<Self> {
-        if channels <= 0 {
-            return Err(Error::InvalidChannels);
-        }
-        let frames = data.len() as i32 / channels;
-        let bytes: Vec<u8> = data
-            .iter()
-            .flat_map(|&sample| sample.to_le_bytes())
-            .collect();
-        Ok(Self {
-            data: bytes,
-            frames,
-            channels,
-            sample_rate,
-            format: AudioFormat::S16,
-        })
-    }
-
-    /// F32 データから PlaybackFrame を作成
-    pub fn from_f32(data: &[f32], channels: i32, sample_rate: i32) -> Result<Self> {
-        if channels <= 0 {
-            return Err(Error::InvalidChannels);
-        }
-        let frames = data.len() as i32 / channels;
-        let bytes: Vec<u8> = data
-            .iter()
-            .flat_map(|&sample| sample.to_le_bytes())
-            .collect();
-        Ok(Self {
-            data: bytes,
-            frames,
-            channels,
-            sample_rate,
-            format: AudioFormat::F32,
-        })
-    }
-}
-
-/// オーディオ再生設定
-pub struct AudioPlaybackConfig {
-    /// デバイス ID（None の場合はデフォルトデバイス）
-    pub device_id: Option<String>,
-    /// サンプルレート（0 の場合はデバイスのデフォルト）
-    pub sample_rate: i32,
-    /// チャンネル数（0 の場合はデバイスのデフォルト）
-    pub channels: i32,
-}
-
-impl Default for AudioPlaybackConfig {
-    fn default() -> Self {
-        Self {
-            device_id: None,
-            sample_rate: 48000,
-            channels: 2,
-        }
-    }
-}
 
 struct PlaybackContext {
     callback: Box<dyn Fn() -> Option<PlaybackFrame> + Send + Sync>,
@@ -102,28 +29,10 @@ struct SessionData {
     buffer_frames: u32,
 }
 
-/// Send でない型をスレッドに渡すためのラッパー（MTA で初期化済みのため安全）
-struct SendHandle(HANDLE);
-unsafe impl Send for SendHandle {}
-impl SendHandle {
-    fn into_inner(self) -> HANDLE {
-        self.0
-    }
-}
-
-struct SendPtr<T>(T);
-
 // Safety: IAudioRenderClient / IAudioClient は COM の MTA (COINIT_MULTITHREADED) で初期化しており、
 // MTA オブジェクトはスレッド間で安全に移送できる。
-// blanket impl ではなく使用する具体型のみに Send を実装する。
 unsafe impl Send for SendPtr<IAudioRenderClient> {}
 unsafe impl Send for SendPtr<IAudioClient> {}
-
-impl<T> SendPtr<T> {
-    fn into_inner(self) -> T {
-        self.0
-    }
-}
 
 /// オーディオ再生
 pub struct AudioPlayback {
@@ -162,7 +71,7 @@ impl AudioPlayback {
             // フォーマット情報を取得
             let sample_rate = (*mix_format).nSamplesPerSec as i32;
             let channels = (*mix_format).nChannels as i32;
-            let format = determine_playback_format(mix_format);
+            let format = crate::device_windows::determine_audio_format(mix_format);
 
             // イベントハンドルを作成
             let event_handle =
@@ -340,25 +249,6 @@ impl Drop for AudioPlayback {
 
 unsafe impl Send for AudioPlayback {}
 unsafe impl Sync for AudioPlayback {}
-
-/// オーディオフォーマットを判定
-unsafe fn determine_playback_format(wave_format: *const WAVEFORMATEX) -> AudioFormat {
-    let format_tag = unsafe { (*wave_format).wFormatTag };
-
-    if format_tag == WAVE_FORMAT_IEEE_FLOAT as u16 {
-        return AudioFormat::F32;
-    }
-
-    if format_tag == WAVE_FORMAT_EXTENSIBLE as u16 {
-        let ext = wave_format as *const WAVEFORMATEXTENSIBLE;
-        let sub_format = unsafe { std::ptr::addr_of!((*ext).SubFormat).read_unaligned() };
-        if sub_format == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
-            return AudioFormat::F32;
-        }
-    }
-
-    AudioFormat::S16
-}
 
 /// 再生スレッド関数
 #[allow(clippy::too_many_arguments)]
