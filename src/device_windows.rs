@@ -1,12 +1,35 @@
 //! Windows 用オーディオデバイス列挙 (WASAPI)
 
 use windows::{
-    Win32::Devices::FunctionDiscovery::*, Win32::Media::Audio::*,
+    Win32::Devices::FunctionDiscovery::*, Win32::Foundation::*, Win32::Media::Audio::*,
+    Win32::Media::KernelStreaming::*, Win32::Media::Multimedia::*,
     Win32::System::Com::StructuredStorage::*, Win32::System::Com::*, Win32::System::Variant::*,
     Win32::UI::Shell::PropertiesSystem::*, core::*,
 };
 
+use crate::common::{AudioDeviceType, AudioFormat};
 use crate::error::{Error, Result};
+
+/// Send でない型をスレッドに渡すためのラッパー（MTA で初期化済みのため安全）
+pub(crate) struct SendHandle(pub(crate) HANDLE);
+unsafe impl Send for SendHandle {}
+impl SendHandle {
+    pub(crate) fn into_inner(self) -> HANDLE {
+        self.0
+    }
+}
+
+pub(crate) struct SendPtr<T>(pub(crate) T);
+
+// Safety: COM オブジェクトは MTA (COINIT_MULTITHREADED) で初期化しており、
+// MTA オブジェクトはスレッド間で安全に移送できる。
+// 各具体型に対する unsafe impl Send は、利用側（capture_windows.rs, playback_windows.rs）で宣言する。
+
+impl<T> SendPtr<T> {
+    pub(crate) fn into_inner(self) -> T {
+        self.0
+    }
+}
 
 /// COM を MTA モードで初期化する。
 /// 既に MTA で初期化済み (S_FALSE) の場合は成功とする。
@@ -23,24 +46,7 @@ pub(crate) fn init_com_mta() -> Result<()> {
     }
 }
 
-/// オーディオデバイスの種類
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AudioDeviceType {
-    /// 入力デバイス（マイク）
-    Input,
-    /// 出力デバイス（スピーカー）
-    Output,
-}
-
-/// オーディオフォーマット
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AudioFormat {
-    /// Signed 16-bit integer
-    S16,
-    /// 32-bit float
-    F32,
-}
-
+#[derive(Debug)]
 /// オーディオデバイス
 pub struct AudioDevice {
     name: String,
@@ -214,6 +220,25 @@ fn get_device_format(device: &IMMDevice) -> Option<(i32, i32)> {
 
         Some((channels, sample_rate))
     }
+}
+
+/// オーディオフォーマットを判定
+pub(crate) unsafe fn determine_audio_format(wave_format: *const WAVEFORMATEX) -> AudioFormat {
+    let format_tag = unsafe { (*wave_format).wFormatTag };
+
+    if format_tag == WAVE_FORMAT_IEEE_FLOAT as u16 {
+        return AudioFormat::F32;
+    }
+
+    if format_tag == WAVE_FORMAT_EXTENSIBLE as u16 {
+        let ext = wave_format as *const WAVEFORMATEXTENSIBLE;
+        let sub_format = unsafe { std::ptr::addr_of!((*ext).SubFormat).read_unaligned() };
+        if sub_format == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
+            return AudioFormat::F32;
+        }
+    }
+
+    AudioFormat::S16
 }
 
 /// デバイス ID からデバイスを取得

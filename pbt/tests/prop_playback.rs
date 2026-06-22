@@ -10,7 +10,7 @@ proptest! {
         data in proptest::collection::vec(any::<i16>(), 0..=512),
     ) {
         let frame = PlaybackFrame::from_s16(&data, channels, sample_rate).unwrap();
-        let expected_frames = data.len() as i32 / channels;
+        let expected_frames = i32::try_from(data.len()).expect("data len must fit in i32") / channels;
         prop_assert_eq!(frame.frames, expected_frames);
         prop_assert_eq!(frame.channels, channels);
         prop_assert_eq!(frame.data.len(), data.len() * 2);
@@ -24,7 +24,7 @@ proptest! {
         data in proptest::collection::vec(any::<f32>(), 0..=512),
     ) {
         let frame = PlaybackFrame::from_f32(&data, channels, sample_rate).unwrap();
-        let expected_frames = data.len() as i32 / channels;
+        let expected_frames = i32::try_from(data.len()).expect("data len must fit in i32") / channels;
         prop_assert_eq!(frame.frames, expected_frames);
         prop_assert_eq!(frame.channels, channels);
         prop_assert_eq!(frame.data.len(), data.len() * 4);

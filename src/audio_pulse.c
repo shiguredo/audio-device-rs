@@ -84,8 +84,19 @@ static void source_info_callback(pa_context* c, const pa_source_info* info,
 
     // description を表示名として使用する
     device->name = strdup(info->description ? info->description : info->name);
+    if (!device->name) {
+        free(device);
+        return;
+    }
+
     // PulseAudio の source name を一意識別子として使用する
     device->unique_id = strdup(info->name);
+    if (!device->unique_id) {
+        free(device->name);
+        free(device);
+        return;
+    }
+
     device->channels =
         info->sample_spec.channels > 0 ? info->sample_spec.channels : 1;
     device->sample_rate =
@@ -134,7 +145,18 @@ static void sink_info_callback(pa_context* c, const pa_sink_info* info,
     }
 
     device->name = strdup(info->description ? info->description : info->name);
+    if (!device->name) {
+        free(device);
+        return;
+    }
+
     device->unique_id = strdup(info->name);
+    if (!device->unique_id) {
+        free(device->name);
+        free(device);
+        return;
+    }
+
     device->channels =
         info->sample_spec.channels > 0 ? info->sample_spec.channels : 2;
     device->sample_rate =
@@ -215,6 +237,10 @@ int audio_enumerate_devices(struct AudioDevice*** devices, int* count) {
 
     // source 列挙が完了するまで待機する
     while (enum_ctx.done < 1) {
+        pa_context_state_t state = pa_context_get_state(context);
+        if (state == PA_CONTEXT_FAILED || state == PA_CONTEXT_TERMINATED) {
+            break;
+        }
         if (pa_mainloop_iterate(mainloop, 1, &ret) < 0) {
             break;
         }
@@ -236,6 +262,10 @@ int audio_enumerate_devices(struct AudioDevice*** devices, int* count) {
 
     // sink 列挙が完了するまで待機する
     while (enum_ctx.done < 2) {
+        pa_context_state_t state = pa_context_get_state(context);
+        if (state == PA_CONTEXT_FAILED || state == PA_CONTEXT_TERMINATED) {
+            break;
+        }
         if (pa_mainloop_iterate(mainloop, 1, &ret) < 0) {
             break;
         }

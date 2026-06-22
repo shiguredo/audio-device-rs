@@ -1,45 +1,31 @@
 use std::ffi::CStr;
 use std::ptr::NonNull;
 
+use crate::common::{AudioDeviceType, AudioFormat};
 use crate::error::{Error, Result};
 use crate::ffi;
 
-/// オーディオデバイスの種類
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AudioDeviceType {
-    /// 入力デバイス（マイク）
-    Input,
-    /// 出力デバイス（スピーカー）
-    Output,
-}
-
 impl AudioDeviceType {
-    fn from_ffi(device_type: i32) -> Self {
+    fn from_ffi(device_type: i32) -> Result<Self> {
         match device_type {
-            x if x == ffi::AUDIO_DEVICE_TYPE_OUTPUT as i32 => AudioDeviceType::Output,
-            _ => AudioDeviceType::Input,
+            x if x == ffi::AUDIO_DEVICE_TYPE_OUTPUT as i32 => Ok(AudioDeviceType::Output),
+            x if x == ffi::AUDIO_DEVICE_TYPE_INPUT as i32 => Ok(AudioDeviceType::Input),
+            other => Err(Error::UnknownDeviceType(other)),
         }
     }
-}
-
-/// オーディオフォーマット
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AudioFormat {
-    /// Signed 16-bit integer
-    S16,
-    /// 32-bit float
-    F32,
 }
 
 impl AudioFormat {
-    pub(crate) fn from_ffi(format: i32) -> Self {
+    pub(crate) fn from_ffi(format: i32) -> Result<Self> {
         match format {
-            x if x == ffi::AUDIO_FORMAT_F32 as i32 => AudioFormat::F32,
-            _ => AudioFormat::S16,
+            x if x == ffi::AUDIO_FORMAT_F32 as i32 => Ok(AudioFormat::F32),
+            x if x == ffi::AUDIO_FORMAT_S16 as i32 => Ok(AudioFormat::S16),
+            other => Err(Error::UnknownFormat(other)),
         }
     }
 }
 
+#[derive(Debug)]
 pub struct AudioDevice {
     raw: NonNull<ffi::AudioDevice>,
     device_type: AudioDeviceType,
@@ -116,11 +102,12 @@ impl AudioDeviceList {
             (0..count as usize)
                 .filter_map(|i| {
                     let device_ptr = unsafe { *devices_ptr.add(i) };
-                    NonNull::new(device_ptr).map(|raw| {
+                    NonNull::new(device_ptr).and_then(|raw| {
                         let device_type = AudioDeviceType::from_ffi(unsafe {
                             ffi::audio_device_type(raw.as_ptr())
-                        });
-                        AudioDevice { raw, device_type }
+                        })
+                        .ok()?;
+                        Some(AudioDevice { raw, device_type })
                     })
                 })
                 .filter(|d| filter.is_none_or(|f| d.device_type == f))
@@ -162,3 +149,46 @@ impl Drop for AudioDeviceList {
 // AudioDeviceList は FFI ポインタを持つが、内部データはスレッドセーフ
 unsafe impl Send for AudioDeviceList {}
 unsafe impl Sync for AudioDeviceList {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_type_from_ffi_known_values() {
+        assert_eq!(
+            AudioDeviceType::from_ffi(crate::ffi::AUDIO_DEVICE_TYPE_INPUT as i32).unwrap(),
+            AudioDeviceType::Input
+        );
+        assert_eq!(
+            AudioDeviceType::from_ffi(crate::ffi::AUDIO_DEVICE_TYPE_OUTPUT as i32).unwrap(),
+            AudioDeviceType::Output
+        );
+    }
+
+    #[test]
+    fn device_type_from_ffi_unknown_values() {
+        assert!(AudioDeviceType::from_ffi(-1).is_err());
+        assert!(AudioDeviceType::from_ffi(2).is_err());
+        assert!(AudioDeviceType::from_ffi(999).is_err());
+    }
+
+    #[test]
+    fn audio_format_from_ffi_known_values() {
+        assert_eq!(
+            AudioFormat::from_ffi(crate::ffi::AUDIO_FORMAT_S16 as i32).unwrap(),
+            AudioFormat::S16
+        );
+        assert_eq!(
+            AudioFormat::from_ffi(crate::ffi::AUDIO_FORMAT_F32 as i32).unwrap(),
+            AudioFormat::F32
+        );
+    }
+
+    #[test]
+    fn audio_format_from_ffi_unknown_values() {
+        assert!(AudioFormat::from_ffi(-1).is_err());
+        assert!(AudioFormat::from_ffi(2).is_err());
+        assert!(AudioFormat::from_ffi(999).is_err());
+    }
+}
