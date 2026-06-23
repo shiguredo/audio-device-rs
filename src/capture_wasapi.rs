@@ -6,8 +6,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use windows::{
-    Win32::Foundation::*, Win32::Media::Audio::*, Win32::System::Com::*,
-    Win32::System::Performance::*, Win32::System::Threading::*,
+    Win32::Foundation::*, Win32::Media::Audio::*, Win32::Media::KernelStreaming::*,
+    Win32::Media::Multimedia::*, Win32::System::Com::*, Win32::System::Performance::*,
+    Win32::System::Threading::*,
 };
 
 use crate::common::{AudioCaptureConfig, AudioDeviceType, AudioFormat, AudioFrame};
@@ -73,24 +74,24 @@ impl WasapiCaptureImpl {
 
             CoTaskMemFree(Some(mix_format as *const _));
 
-            let _ = audio_client
+            audio_client
                 .Initialize(
                     AUDCLNT_SHAREMODE_SHARED,
                     AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
                     100_000, // 10ms
                     0,
                     mix_format,
-                    std::ptr::null(),
+                    Some(std::ptr::null()),
                 )
                 .map_err(|_| Error::SessionCreateFailed)?;
 
-            let buffer_frame_count = audio_client
+            let _buffer_frame_count = audio_client
                 .GetBufferSize()
                 .map_err(|_| Error::SessionCreateFailed)?
                 as u32;
 
             let capture_client: IAudioCaptureClient = audio_client
-                .GetService(&IAudioCaptureClient::IID)
+                .GetService()
                 .map_err(|_| Error::SessionCreateFailed)?;
 
             let event_handle =
@@ -141,8 +142,8 @@ impl WasapiCaptureImpl {
 
         context.running.store(true, Ordering::Release);
 
-        let capture_client = session.capture_client.clone();
-        let event_handle = session.event_handle;
+        let capture_client = SendPtr(session.capture_client.clone());
+        let event_handle = SendHandle(session.event_handle);
         let format = session.format;
         let sample_rate = session.sample_rate;
         let channels = session.channels;
@@ -152,8 +153,8 @@ impl WasapiCaptureImpl {
             .name("audio-capture".to_string())
             .spawn(move || {
                 capture_thread_func(
-                    capture_client,
-                    event_handle,
+                    capture_client.into_inner(),
+                    event_handle.into_inner(),
                     format,
                     sample_rate,
                     channels,

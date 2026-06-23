@@ -2,12 +2,11 @@
 
 use windows::{
     Win32::Devices::FunctionDiscovery::*, Win32::Foundation::*, Win32::Media::Audio::*,
-    Win32::Media::KernelStreaming::*, Win32::Media::Multimedia::*,
-    Win32::System::Com::StructuredStorage::*, Win32::System::Com::*, Win32::System::Variant::*,
-    Win32::UI::Shell::PropertiesSystem::*, core::*,
+    Win32::System::Com::*, Win32::System::Variant::*, Win32::UI::Shell::PropertiesSystem::*,
+    core::*,
 };
 
-use crate::common::{AudioDeviceType, AudioFormat};
+use crate::common::AudioDeviceType;
 use crate::error::{Error, Result};
 
 /// Send でない型をスレッドに渡すためのラッパー（MTA で初期化済みのため安全）
@@ -133,16 +132,14 @@ fn enumerate_devices_by_type(device_type: AudioDeviceType) -> Result<Vec<WasapiD
 }
 
 fn get_device_name(props: &IPropertyStore) -> Option<String> {
-    let mut pv = PROPVARIANT::default();
     unsafe {
-        match props.GetValue(&PKEY_Device_FriendlyName as *const _ as *const _, &mut pv) {
-            Ok(()) => {
-                if pv.Anonymous.Anonymous.vt == (VT_LPWSTR.0 as u16) {
-                    let ptr = *pv.Anonymous.Anonymous.Anonymous.pwszVal;
-                    let wide_str = { ptr };
-                    if !wide_str.is_null() {
-                        let len = (0..).take_while(|&i| *wide_str.add(i) != 0).count();
-                        let slice = std::slice::from_raw_parts(wide_str, len);
+        match props.GetValue(&PKEY_Device_FriendlyName as *const _ as *const _) {
+            Ok(pv) => {
+                if pv.Anonymous.Anonymous.vt == VARENUM(VT_LPWSTR.0) {
+                    let ptr = pv.Anonymous.Anonymous.Anonymous.pwszVal.0;
+                    if !ptr.is_null() {
+                        let len = (0..).take_while(|&i| *ptr.add(i) != 0).count();
+                        let slice = std::slice::from_raw_parts(ptr, len);
                         return String::from_utf16(slice).ok();
                     }
                 }
@@ -162,21 +159,6 @@ fn get_device_format(device: &IMMDevice) -> Option<(i32, i32)> {
         CoTaskMemFree(Some(mix_format as *const _));
         Some((channels, sample_rate))
     }
-}
-
-pub(crate) unsafe fn determine_audio_format(wave_format: *const WAVEFORMATEX) -> AudioFormat {
-    let format_tag = unsafe { (*wave_format).wFormatTag };
-    if format_tag == WAVE_FORMAT_IEEE_FLOAT as u16 {
-        return AudioFormat::F32;
-    }
-    if format_tag == WAVE_FORMAT_EXTENSIBLE as u16 {
-        let ext = wave_format as *const WAVEFORMATEXTENSIBLE;
-        let sub_format = unsafe { std::ptr::addr_of!((*ext).SubFormat).read_unaligned() };
-        if sub_format == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
-            return AudioFormat::F32;
-        }
-    }
-    AudioFormat::S16
 }
 
 pub(crate) fn get_device_by_id(
