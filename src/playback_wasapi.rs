@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use windows::{
-    Win32::Foundation::*, Win32::Media::Audio::*, Win32::System::Com::*,
-    Win32::System::Threading::*,
+    Win32::Foundation::*, Win32::Media::Audio::*, Win32::Media::KernelStreaming::*,
+    Win32::Media::Multimedia::*, Win32::System::Com::*, Win32::System::Threading::*,
 };
 
 use crate::common::{AudioDeviceType, AudioFormat, AudioPlaybackConfig, PlaybackFrame};
@@ -75,14 +75,14 @@ impl WasapiPlaybackImpl {
 
             CoTaskMemFree(Some(mix_format as *const _));
 
-            let _ = audio_client
+            audio_client
                 .Initialize(
                     AUDCLNT_SHAREMODE_SHARED,
                     AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
                     100_000,
                     0,
                     mix_format,
-                    std::ptr::null(),
+                    Some(std::ptr::null()),
                 )
                 .map_err(|_| Error::SessionCreateFailed)?;
 
@@ -91,7 +91,7 @@ impl WasapiPlaybackImpl {
                 .map_err(|_| Error::SessionCreateFailed)?;
 
             let render_client: IAudioRenderClient = audio_client
-                .GetService(&IAudioRenderClient::IID)
+                .GetService()
                 .map_err(|_| Error::SessionCreateFailed)?;
 
             let event_handle =
@@ -143,9 +143,9 @@ impl WasapiPlaybackImpl {
 
         context.running.store(true, Ordering::Release);
 
-        let render_client = session.render_client.clone();
-        let audio_client = session.audio_client.clone();
-        let event_handle = session.event_handle;
+        let render_client = SendPtr(session.render_client.clone());
+        let audio_client = SendPtr(session.audio_client.clone());
+        let event_handle = SendHandle(session.event_handle);
         let format = session.format;
         let sample_rate = session.sample_rate;
         let channels = session.channels;
@@ -156,9 +156,9 @@ impl WasapiPlaybackImpl {
             .name("audio-playback".to_string())
             .spawn(move || {
                 playback_thread_func(
-                    render_client,
-                    audio_client,
-                    event_handle,
+                    render_client.into_inner(),
+                    audio_client.into_inner(),
+                    event_handle.into_inner(),
                     format,
                     sample_rate,
                     channels,
@@ -225,6 +225,7 @@ impl Drop for WasapiPlaybackImpl {
 unsafe impl Send for WasapiPlaybackImpl {}
 unsafe impl Sync for WasapiPlaybackImpl {}
 
+#[expect(clippy::too_many_arguments)]
 fn playback_thread_func(
     render_client: IAudioRenderClient,
     audio_client: IAudioClient,
