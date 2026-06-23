@@ -6,29 +6,9 @@
 use std::ffi::{CStr, c_char};
 use std::ptr::NonNull;
 
-use crate::common::{AudioDeviceType, AudioFormat};
+use crate::common::AudioDeviceType;
 use crate::error::{Error, Result};
 use crate::ffi;
-
-impl AudioDeviceType {
-    pub(crate) fn from_ffi(device_type: i32) -> Result<Self> {
-        match device_type {
-            x if x == ffi::AUDIO_DEVICE_TYPE_OUTPUT as i32 => Ok(AudioDeviceType::Output),
-            x if x == ffi::AUDIO_DEVICE_TYPE_INPUT as i32 => Ok(AudioDeviceType::Input),
-            other => Err(Error::UnknownDeviceType(other)),
-        }
-    }
-}
-
-impl AudioFormat {
-    pub(crate) fn from_ffi(format: i32) -> Result<Self> {
-        match format {
-            x if x == ffi::AUDIO_FORMAT_F32 as i32 => Ok(AudioFormat::F32),
-            x if x == ffi::AUDIO_FORMAT_S16 as i32 => Ok(AudioFormat::S16),
-            other => Err(Error::UnknownFormat(other)),
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // バックエンドとの境界
@@ -216,6 +196,7 @@ const OPS_PIPEWIRE: DeviceOps = DeviceOps {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::AudioFormat;
 
     #[test]
     fn device_type_from_ffi_known_values() {
