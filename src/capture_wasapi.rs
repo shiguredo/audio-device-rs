@@ -74,11 +74,6 @@ impl WasapiCaptureImpl {
                 )
                 .map_err(|_| Error::SessionCreateFailed)?;
 
-            let _buffer_frame_count = audio_client
-                .GetBufferSize()
-                .map_err(|_| Error::SessionCreateFailed)?
-                as u32;
-
             let capture_client: IAudioCaptureClient = audio_client
                 .GetService()
                 .map_err(|_| Error::SessionCreateFailed)?;
