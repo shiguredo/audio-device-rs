@@ -338,9 +338,10 @@ void audio_coreaudio_free_devices(struct AudioDevice** devices, int count) {
 
     for (int i = 0; i < count; i++) {
         if (devices[i]) {
-            free(devices[i]->name);
-            free(devices[i]->unique_id);
-            free(devices[i]);
+            struct AudioDeviceCoreAudio* d = (struct AudioDeviceCoreAudio*)devices[i];
+            free(d->name);
+            free(d->unique_id);
+            free(d);
         }
     }
     free(devices);
@@ -350,35 +351,40 @@ const char* audio_coreaudio_device_name(struct AudioDevice* device) {
     if (!device) {
         return NULL;
     }
-    return device->name;
+    struct AudioDeviceCoreAudio* d = (struct AudioDeviceCoreAudio*)device;
+    return d->name;
 }
 
 const char* audio_coreaudio_device_unique_id(struct AudioDevice* device) {
     if (!device) {
         return NULL;
     }
-    return device->unique_id;
+    struct AudioDeviceCoreAudio* d = (struct AudioDeviceCoreAudio*)device;
+    return d->unique_id;
 }
 
 int audio_coreaudio_device_channels(struct AudioDevice* device) {
     if (!device) {
         return 0;
     }
-    return device->channels;
+    struct AudioDeviceCoreAudio* d = (struct AudioDeviceCoreAudio*)device;
+    return d->channels;
 }
 
 int audio_coreaudio_device_sample_rate(struct AudioDevice* device) {
     if (!device) {
         return 0;
     }
-    return device->sample_rate;
+    struct AudioDeviceCoreAudio* d = (struct AudioDeviceCoreAudio*)device;
+    return d->sample_rate;
 }
 
 int audio_coreaudio_device_type(struct AudioDevice* device) {
     if (!device) {
         return AUDIO_DEVICE_TYPE_INPUT;
     }
-    return device->device_type;
+    struct AudioDeviceCoreAudio* d = (struct AudioDeviceCoreAudio*)device;
+    return d->device_type;
 }
 
 static AudioDeviceID find_device_by_uid(const char* uid) {
