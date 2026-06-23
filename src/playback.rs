@@ -141,4 +141,3 @@ impl AudioPlayback {
 }
 
 unsafe impl Send for AudioPlayback {}
-unsafe impl Sync for AudioPlayback {}

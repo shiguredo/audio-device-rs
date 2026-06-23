@@ -164,4 +164,3 @@ impl AudioCapture {
 }
 
 unsafe impl Send for AudioCapture {}
-unsafe impl Sync for AudioCapture {}
