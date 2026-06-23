@@ -15,39 +15,48 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(enable_default_wasapi)");
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let mut enable_default_count = 0;
 
     match target_os.as_str() {
         "macos" => {
-            let has_coreaudio = env::var("CARGO_FEATURE_COREAUDIO").is_ok();
-            if has_coreaudio {
+            if env::var("CARGO_FEATURE_COREAUDIO").is_ok() {
                 println!("cargo::rustc-cfg=enable_coreaudio");
+            }
+            if env::var("CARGO_FEATURE_DEFAULT_COREAUDIO").is_ok() {
                 println!("cargo::rustc-cfg=enable_default_coreaudio");
+                enable_default_count += 1;
             }
         }
         "linux" => {
-            let has_pulse = env::var("CARGO_FEATURE_PULSE").is_ok();
-            let has_pipewire = env::var("CARGO_FEATURE_PIPEWIRE").is_ok();
-
-            if has_pulse {
+            if env::var("CARGO_FEATURE_PULSE").is_ok() {
                 println!("cargo::rustc-cfg=enable_pulse");
-                // pulse が有効なら常に pulse がデフォルト
-                println!("cargo::rustc-cfg=enable_default_pulse");
             }
-            if has_pipewire {
+            if env::var("CARGO_FEATURE_PIPEWIRE").is_ok() {
                 println!("cargo::rustc-cfg=enable_pipewire");
-                if !has_pulse {
-                    // pulse が無効な場合のみ pipewire がデフォルト
-                    println!("cargo::rustc-cfg=enable_default_pipewire");
-                }
+            }
+            if env::var("CARGO_FEATURE_DEFAULT_PULSE").is_ok() {
+                println!("cargo::rustc-cfg=enable_default_pulse");
+                enable_default_count += 1;
+            }
+            if env::var("CARGO_FEATURE_DEFAULT_PIPEWIRE").is_ok() {
+                println!("cargo::rustc-cfg=enable_default_pipewire");
+                enable_default_count += 1;
             }
         }
         "windows" => {
             if env::var("CARGO_FEATURE_WASAPI").is_ok() {
                 println!("cargo::rustc-cfg=enable_wasapi");
+            }
+            if env::var("CARGO_FEATURE_DEFAULT_WASAPI").is_ok() {
                 println!("cargo::rustc-cfg=enable_default_wasapi");
+                enable_default_count += 1;
             }
         }
         _ => panic!("Unsupported target OS: {}", target_os),
+    }
+
+    if enable_default_count >= 2 {
+        panic!("Multiple default backends selected. Enable exactly one default-* feature.");
     }
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
