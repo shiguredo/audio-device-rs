@@ -164,10 +164,12 @@ fn get_device_format(device: &IMMDevice) -> Option<(i32, i32)> {
 pub(crate) unsafe fn determine_audio_format(wave_format: *const WAVEFORMATEX) -> AudioFormat {
     let format_tag = unsafe { (*wave_format).wFormatTag };
 
+    // WAVE_FORMAT_IEEE_FLOAT の場合は F32 と判定する
     if format_tag == WAVE_FORMAT_IEEE_FLOAT as u16 {
         return AudioFormat::F32;
     }
 
+    // WAVE_FORMAT_EXTENSIBLE の場合は SubFormat GUID を確認する
     if format_tag == WAVE_FORMAT_EXTENSIBLE as u16 {
         let ext = wave_format as *const WAVEFORMATEXTENSIBLE;
         let sub_format = unsafe { std::ptr::addr_of!((*ext).SubFormat).read_unaligned() };
@@ -176,6 +178,7 @@ pub(crate) unsafe fn determine_audio_format(wave_format: *const WAVEFORMATEX) ->
         }
     }
 
+    // それ以外は全て S16 として扱う
     AudioFormat::S16
 }
 
