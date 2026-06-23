@@ -1,194 +1,385 @@
-use std::ffi::CStr;
-use std::ptr::NonNull;
+//! オーディオデバイスとデバイスリストの定義。
+//!
+//! バックエンドに依存しない形でデバイス情報（名前、一意識別子、チャンネル数、サンプルレート）を
+//! 取得する [AudioDevice] と、デバイス列挙の [AudioDeviceList] を提供する。
 
-use crate::common::{AudioDeviceType, AudioFormat};
-use crate::error::{Error, Result};
-use crate::ffi;
+use crate::common::AudioDeviceType;
+use crate::error::Result;
 
-impl AudioDeviceType {
-    fn from_ffi(device_type: i32) -> Result<Self> {
-        match device_type {
-            x if x == ffi::AUDIO_DEVICE_TYPE_OUTPUT as i32 => Ok(AudioDeviceType::Output),
-            x if x == ffi::AUDIO_DEVICE_TYPE_INPUT as i32 => Ok(AudioDeviceType::Input),
-            other => Err(Error::UnknownDeviceType(other)),
-        }
-    }
-}
+#[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
+use crate::device_ffi::{FfiDeviceImpl, FfiDeviceListImpl};
 
-impl AudioFormat {
-    pub(crate) fn from_ffi(format: i32) -> Result<Self> {
-        match format {
-            x if x == ffi::AUDIO_FORMAT_F32 as i32 => Ok(AudioFormat::F32),
-            x if x == ffi::AUDIO_FORMAT_S16 as i32 => Ok(AudioFormat::S16),
-            other => Err(Error::UnknownFormat(other)),
-        }
-    }
-}
+#[cfg(enable_wasapi)]
+use crate::device_wasapi::{WasapiDeviceImpl, WasapiDeviceListImpl};
 
-#[derive(Debug)]
-pub struct AudioDevice {
-    raw: NonNull<ffi::AudioDevice>,
-    device_type: AudioDeviceType,
+/// オーディオデバイス。
+pub struct AudioDevice(pub(crate) AudioDeviceInner);
+
+pub(crate) enum AudioDeviceInner {
+    #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
+    Ffi(FfiDeviceImpl),
+    #[cfg(enable_wasapi)]
+    Wasapi(WasapiDeviceImpl),
 }
 
 impl AudioDevice {
+    /// デバイス名を取得する。
     pub fn name(&self) -> Result<String> {
-        let name_ptr = unsafe { ffi::audio_device_name(self.raw.as_ptr()) };
-        if name_ptr.is_null() {
-            return Err(Error::NullPointer("device name"));
+        match &self.0 {
+            #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
+            AudioDeviceInner::Ffi(inner) => inner.name(),
+            #[cfg(enable_wasapi)]
+            AudioDeviceInner::Wasapi(inner) => inner.name(),
         }
-        let name = unsafe { CStr::from_ptr(name_ptr) };
-        Ok(name.to_string_lossy().into_owned())
     }
 
+    /// デバイスの一意識別子を取得する。
     pub fn unique_id(&self) -> Result<String> {
-        let id_ptr = unsafe { ffi::audio_device_unique_id(self.raw.as_ptr()) };
-        if id_ptr.is_null() {
-            return Err(Error::NullPointer("device unique_id"));
+        match &self.0 {
+            #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
+            AudioDeviceInner::Ffi(inner) => inner.unique_id(),
+            #[cfg(enable_wasapi)]
+            AudioDeviceInner::Wasapi(inner) => inner.unique_id(),
         }
-        let id = unsafe { CStr::from_ptr(id_ptr) };
-        Ok(id.to_string_lossy().into_owned())
     }
 
+    /// チャンネル数を取得する。
     pub fn channels(&self) -> i32 {
-        unsafe { ffi::audio_device_channels(self.raw.as_ptr()) }
+        match &self.0 {
+            #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
+            AudioDeviceInner::Ffi(inner) => inner.channels(),
+            #[cfg(enable_wasapi)]
+            AudioDeviceInner::Wasapi(inner) => inner.channels(),
+        }
     }
 
+    /// サンプルレートを取得する。
     pub fn sample_rate(&self) -> i32 {
-        unsafe { ffi::audio_device_sample_rate(self.raw.as_ptr()) }
+        match &self.0 {
+            #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
+            AudioDeviceInner::Ffi(inner) => inner.sample_rate(),
+            #[cfg(enable_wasapi)]
+            AudioDeviceInner::Wasapi(inner) => inner.sample_rate(),
+        }
     }
 
+    /// デバイスの種類を取得する。
     pub fn device_type(&self) -> AudioDeviceType {
-        self.device_type
+        match &self.0 {
+            #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
+            AudioDeviceInner::Ffi(inner) => inner.device_type(),
+            #[cfg(enable_wasapi)]
+            AudioDeviceInner::Wasapi(inner) => inner.device_type(),
+        }
     }
 }
 
-// AudioDevice は FFI ポインタを持つが、内部データはスレッドセーフ
 unsafe impl Send for AudioDevice {}
 unsafe impl Sync for AudioDevice {}
 
-pub struct AudioDeviceList {
-    devices_ptr: *mut *mut ffi::AudioDevice,
-    count: i32,
-    devices: Vec<AudioDevice>,
+/// オーディオデバイスリスト。
+pub struct AudioDeviceList(pub(crate) AudioDeviceListInner);
+
+pub(crate) enum AudioDeviceListInner {
+    #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
+    Ffi {
+        _inner: FfiDeviceListImpl,
+        devices: Vec<AudioDevice>,
+    },
+    #[cfg(enable_wasapi)]
+    Wasapi {
+        _inner: WasapiDeviceListImpl,
+        devices: Vec<AudioDevice>,
+    },
 }
 
 impl AudioDeviceList {
-    /// 全デバイス（入力・出力）を列挙する
+    /// デフォルトバックエンドでデバイスを列挙する。
+    #[cfg(any(
+        enable_default_coreaudio,
+        enable_default_pulse,
+        enable_default_pipewire,
+        enable_default_wasapi
+    ))]
     pub fn enumerate() -> Result<Self> {
-        Self::enumerate_internal(None)
+        #[cfg(enable_default_coreaudio)]
+        {
+            Self::enumerate_coreaudio()
+        }
+        #[cfg(enable_default_pulse)]
+        {
+            Self::enumerate_pulse()
+        }
+        #[cfg(enable_default_pipewire)]
+        {
+            Self::enumerate_pipewire()
+        }
+        #[cfg(enable_default_wasapi)]
+        {
+            Self::enumerate_wasapi()
+        }
     }
 
-    /// 入力デバイス（マイク）を列挙する
+    /// デフォルトバックエンドで入力デバイスを列挙する。
+    #[cfg(any(
+        enable_default_coreaudio,
+        enable_default_pulse,
+        enable_default_pipewire,
+        enable_default_wasapi
+    ))]
     pub fn enumerate_input() -> Result<Self> {
-        Self::enumerate_internal(Some(AudioDeviceType::Input))
+        #[cfg(enable_default_coreaudio)]
+        {
+            Self::enumerate_input_coreaudio()
+        }
+        #[cfg(enable_default_pulse)]
+        {
+            Self::enumerate_input_pulse()
+        }
+        #[cfg(enable_default_pipewire)]
+        {
+            Self::enumerate_input_pipewire()
+        }
+        #[cfg(enable_default_wasapi)]
+        {
+            Self::enumerate_input_wasapi()
+        }
     }
 
-    /// 出力デバイス（スピーカー）を列挙する
+    /// デフォルトバックエンドで出力デバイスを列挙する。
+    #[cfg(any(
+        enable_default_coreaudio,
+        enable_default_pulse,
+        enable_default_pipewire,
+        enable_default_wasapi
+    ))]
     pub fn enumerate_output() -> Result<Self> {
-        Self::enumerate_internal(Some(AudioDeviceType::Output))
+        #[cfg(enable_default_coreaudio)]
+        {
+            Self::enumerate_output_coreaudio()
+        }
+        #[cfg(enable_default_pulse)]
+        {
+            Self::enumerate_output_pulse()
+        }
+        #[cfg(enable_default_pipewire)]
+        {
+            Self::enumerate_output_pipewire()
+        }
+        #[cfg(enable_default_wasapi)]
+        {
+            Self::enumerate_output_wasapi()
+        }
     }
 
-    fn enumerate_internal(filter: Option<AudioDeviceType>) -> Result<Self> {
-        let mut devices_ptr: *mut *mut ffi::AudioDevice = std::ptr::null_mut();
-        let mut count: i32 = 0;
+    // -----------------------------------------------------------------------
+    // CoreAudio 明示関数
+    // -----------------------------------------------------------------------
 
-        let ret = unsafe { ffi::audio_enumerate_devices(&mut devices_ptr, &mut count) };
-        if ret < 0 {
-            return Err(Error::DeviceAccessDenied);
-        }
-
-        let devices: Vec<AudioDevice> = if count > 0 && !devices_ptr.is_null() {
-            (0..count as usize)
-                .filter_map(|i| {
-                    let device_ptr = unsafe { *devices_ptr.add(i) };
-                    NonNull::new(device_ptr).and_then(|raw| {
-                        let device_type = AudioDeviceType::from_ffi(unsafe {
-                            ffi::audio_device_type(raw.as_ptr())
-                        })
-                        .ok()?;
-                        Some(AudioDevice { raw, device_type })
-                    })
-                })
-                .filter(|d| filter.is_none_or(|f| d.device_type == f))
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        Ok(Self {
-            devices_ptr,
-            count,
+    #[cfg(enable_coreaudio)]
+    pub fn enumerate_coreaudio() -> Result<Self> {
+        let inner = FfiDeviceListImpl::enumerate_coreaudio(None)?;
+        let devices = inner
+            .as_slice()
+            .iter()
+            .map(|d| AudioDevice(AudioDeviceInner::Ffi(*d)))
+            .collect();
+        Ok(Self(AudioDeviceListInner::Ffi {
+            _inner: inner,
             devices,
-        })
+        }))
     }
 
+    #[cfg(enable_coreaudio)]
+    pub fn enumerate_input_coreaudio() -> Result<Self> {
+        let inner = FfiDeviceListImpl::enumerate_coreaudio(Some(AudioDeviceType::Input))?;
+        let devices = inner
+            .as_slice()
+            .iter()
+            .map(|d| AudioDevice(AudioDeviceInner::Ffi(*d)))
+            .collect();
+        Ok(Self(AudioDeviceListInner::Ffi {
+            _inner: inner,
+            devices,
+        }))
+    }
+
+    #[cfg(enable_coreaudio)]
+    pub fn enumerate_output_coreaudio() -> Result<Self> {
+        let inner = FfiDeviceListImpl::enumerate_coreaudio(Some(AudioDeviceType::Output))?;
+        let devices = inner
+            .as_slice()
+            .iter()
+            .map(|d| AudioDevice(AudioDeviceInner::Ffi(*d)))
+            .collect();
+        Ok(Self(AudioDeviceListInner::Ffi {
+            _inner: inner,
+            devices,
+        }))
+    }
+
+    // -----------------------------------------------------------------------
+    // PulseAudio 明示関数
+    // -----------------------------------------------------------------------
+
+    #[cfg(enable_pulse)]
+    pub fn enumerate_pulse() -> Result<Self> {
+        let inner = FfiDeviceListImpl::enumerate_pulse(None)?;
+        let devices = inner
+            .as_slice()
+            .iter()
+            .map(|d| AudioDevice(AudioDeviceInner::Ffi(*d)))
+            .collect();
+        Ok(Self(AudioDeviceListInner::Ffi {
+            _inner: inner,
+            devices,
+        }))
+    }
+
+    #[cfg(enable_pulse)]
+    pub fn enumerate_input_pulse() -> Result<Self> {
+        let inner = FfiDeviceListImpl::enumerate_pulse(Some(AudioDeviceType::Input))?;
+        let devices = inner
+            .as_slice()
+            .iter()
+            .map(|d| AudioDevice(AudioDeviceInner::Ffi(*d)))
+            .collect();
+        Ok(Self(AudioDeviceListInner::Ffi {
+            _inner: inner,
+            devices,
+        }))
+    }
+
+    #[cfg(enable_pulse)]
+    pub fn enumerate_output_pulse() -> Result<Self> {
+        let inner = FfiDeviceListImpl::enumerate_pulse(Some(AudioDeviceType::Output))?;
+        let devices = inner
+            .as_slice()
+            .iter()
+            .map(|d| AudioDevice(AudioDeviceInner::Ffi(*d)))
+            .collect();
+        Ok(Self(AudioDeviceListInner::Ffi {
+            _inner: inner,
+            devices,
+        }))
+    }
+
+    // -----------------------------------------------------------------------
+    // PipeWire 明示関数
+    // -----------------------------------------------------------------------
+
+    #[cfg(enable_pipewire)]
+    pub fn enumerate_pipewire() -> Result<Self> {
+        let inner = FfiDeviceListImpl::enumerate_pipewire(None)?;
+        let devices = inner
+            .as_slice()
+            .iter()
+            .map(|d| AudioDevice(AudioDeviceInner::Ffi(*d)))
+            .collect();
+        Ok(Self(AudioDeviceListInner::Ffi {
+            _inner: inner,
+            devices,
+        }))
+    }
+
+    #[cfg(enable_pipewire)]
+    pub fn enumerate_input_pipewire() -> Result<Self> {
+        let inner = FfiDeviceListImpl::enumerate_pipewire(Some(AudioDeviceType::Input))?;
+        let devices = inner
+            .as_slice()
+            .iter()
+            .map(|d| AudioDevice(AudioDeviceInner::Ffi(*d)))
+            .collect();
+        Ok(Self(AudioDeviceListInner::Ffi {
+            _inner: inner,
+            devices,
+        }))
+    }
+
+    #[cfg(enable_pipewire)]
+    pub fn enumerate_output_pipewire() -> Result<Self> {
+        let inner = FfiDeviceListImpl::enumerate_pipewire(Some(AudioDeviceType::Output))?;
+        let devices = inner
+            .as_slice()
+            .iter()
+            .map(|d| AudioDevice(AudioDeviceInner::Ffi(*d)))
+            .collect();
+        Ok(Self(AudioDeviceListInner::Ffi {
+            _inner: inner,
+            devices,
+        }))
+    }
+
+    // -----------------------------------------------------------------------
+    // WASAPI 明示関数
+    // -----------------------------------------------------------------------
+
+    #[cfg(enable_wasapi)]
+    pub fn enumerate_wasapi() -> Result<Self> {
+        let mut inner = WasapiDeviceListImpl::enumerate(None)?;
+        let raw_devices = std::mem::take(&mut inner.devices);
+        let devices = raw_devices
+            .into_iter()
+            .map(|d| AudioDevice(AudioDeviceInner::Wasapi(d)))
+            .collect();
+        Ok(Self(AudioDeviceListInner::Wasapi {
+            _inner: inner,
+            devices,
+        }))
+    }
+
+    #[cfg(enable_wasapi)]
+    pub fn enumerate_input_wasapi() -> Result<Self> {
+        let mut inner = WasapiDeviceListImpl::enumerate(Some(AudioDeviceType::Input))?;
+        let raw_devices = std::mem::take(&mut inner.devices);
+        let devices = raw_devices
+            .into_iter()
+            .map(|d| AudioDevice(AudioDeviceInner::Wasapi(d)))
+            .collect();
+        Ok(Self(AudioDeviceListInner::Wasapi {
+            _inner: inner,
+            devices,
+        }))
+    }
+
+    #[cfg(enable_wasapi)]
+    pub fn enumerate_output_wasapi() -> Result<Self> {
+        let mut inner = WasapiDeviceListImpl::enumerate(Some(AudioDeviceType::Output))?;
+        let raw_devices = std::mem::take(&mut inner.devices);
+        let devices = raw_devices
+            .into_iter()
+            .map(|d| AudioDevice(AudioDeviceInner::Wasapi(d)))
+            .collect();
+        Ok(Self(AudioDeviceListInner::Wasapi {
+            _inner: inner,
+            devices,
+        }))
+    }
+
+    // -----------------------------------------------------------------------
+    // 共通 API
+    // -----------------------------------------------------------------------
+
+    /// デバイスのスライスを取得する。
     pub fn devices(&self) -> &[AudioDevice] {
-        &self.devices
-    }
-
-    pub fn len(&self) -> usize {
-        self.devices.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.devices.is_empty()
-    }
-}
-
-impl Drop for AudioDeviceList {
-    fn drop(&mut self) {
-        if !self.devices_ptr.is_null() {
-            unsafe {
-                ffi::audio_free_devices(self.devices_ptr, self.count);
-            }
+        match &self.0 {
+            #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
+            AudioDeviceListInner::Ffi { devices, .. } => devices,
+            #[cfg(enable_wasapi)]
+            AudioDeviceListInner::Wasapi { devices, .. } => devices,
         }
     }
+
+    /// デバイス数を取得する。
+    pub fn len(&self) -> usize {
+        self.devices().len()
+    }
+
+    /// デバイスが空かどうかを返す。
+    pub fn is_empty(&self) -> bool {
+        self.devices().is_empty()
+    }
 }
 
-// AudioDeviceList は FFI ポインタを持つが、内部データはスレッドセーフ
 unsafe impl Send for AudioDeviceList {}
 unsafe impl Sync for AudioDeviceList {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn device_type_from_ffi_known_values() {
-        assert_eq!(
-            AudioDeviceType::from_ffi(crate::ffi::AUDIO_DEVICE_TYPE_INPUT as i32).unwrap(),
-            AudioDeviceType::Input
-        );
-        assert_eq!(
-            AudioDeviceType::from_ffi(crate::ffi::AUDIO_DEVICE_TYPE_OUTPUT as i32).unwrap(),
-            AudioDeviceType::Output
-        );
-    }
-
-    #[test]
-    fn device_type_from_ffi_unknown_values() {
-        assert!(AudioDeviceType::from_ffi(-1).is_err());
-        assert!(AudioDeviceType::from_ffi(2).is_err());
-        assert!(AudioDeviceType::from_ffi(999).is_err());
-    }
-
-    #[test]
-    fn audio_format_from_ffi_known_values() {
-        assert_eq!(
-            AudioFormat::from_ffi(crate::ffi::AUDIO_FORMAT_S16 as i32).unwrap(),
-            AudioFormat::S16
-        );
-        assert_eq!(
-            AudioFormat::from_ffi(crate::ffi::AUDIO_FORMAT_F32 as i32).unwrap(),
-            AudioFormat::F32
-        );
-    }
-
-    #[test]
-    fn audio_format_from_ffi_unknown_values() {
-        assert!(AudioFormat::from_ffi(-1).is_err());
-        assert!(AudioFormat::from_ffi(2).is_err());
-        assert!(AudioFormat::from_ffi(999).is_err());
-    }
-}

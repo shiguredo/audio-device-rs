@@ -1,7 +1,5 @@
 //! プラットフォーム非依存の共通オーディオ型定義
 
-use std::sync::atomic::AtomicBool;
-
 use crate::error::{Error, Result};
 
 /// オーディオデバイスの種類
@@ -226,9 +224,4 @@ impl Default for AudioPlaybackConfig {
             channels: 2,
         }
     }
-}
-
-pub(crate) struct CaptureContext {
-    pub(crate) callback: Box<dyn Fn(AudioFrame<'_>) + Send + Sync>,
-    pub(crate) running: AtomicBool,
 }

@@ -8,7 +8,7 @@
 
 #include <pulse/pulseaudio.h>
 
-#include "audio_c.h"
+#include "audio_pulse.h"
 
 // AudioDevice 構造体
 struct AudioDevice {
@@ -177,7 +177,7 @@ static void enumerate_state_callback(pa_context* c, void* userdata) {
 }
 
 // デバイス列挙
-int audio_enumerate_devices(struct AudioDevice*** devices, int* count) {
+int audio_pulse_enumerate_devices(struct AudioDevice*** devices, int* count) {
     if (!devices || !count) {
         return -1;
     }
@@ -281,7 +281,7 @@ int audio_enumerate_devices(struct AudioDevice*** devices, int* count) {
     return 0;
 }
 
-void audio_free_devices(struct AudioDevice** devices, int count) {
+void audio_pulse_free_devices(struct AudioDevice** devices, int count) {
     if (!devices) {
         return;
     }
@@ -296,35 +296,35 @@ void audio_free_devices(struct AudioDevice** devices, int count) {
     free(devices);
 }
 
-const char* audio_device_name(struct AudioDevice* device) {
+const char* audio_pulse_device_name(struct AudioDevice* device) {
     if (!device) {
         return NULL;
     }
     return device->name;
 }
 
-const char* audio_device_unique_id(struct AudioDevice* device) {
+const char* audio_pulse_device_unique_id(struct AudioDevice* device) {
     if (!device) {
         return NULL;
     }
     return device->unique_id;
 }
 
-int audio_device_channels(struct AudioDevice* device) {
+int audio_pulse_device_channels(struct AudioDevice* device) {
     if (!device) {
         return 0;
     }
     return device->channels;
 }
 
-int audio_device_sample_rate(struct AudioDevice* device) {
+int audio_pulse_device_sample_rate(struct AudioDevice* device) {
     if (!device) {
         return 0;
     }
     return device->sample_rate;
 }
 
-int audio_device_type(struct AudioDevice* device) {
+int audio_pulse_device_type(struct AudioDevice* device) {
     if (!device) {
         return AUDIO_DEVICE_TYPE_INPUT;
     }
@@ -398,7 +398,7 @@ static void stream_state_callback(pa_stream* s, void* userdata) {
     }
 }
 
-struct AudioSession* audio_session_create(const char* device_id, int sample_rate,
+struct AudioSession* audio_pulse_session_create(const char* device_id, int sample_rate,
                                           int channels) {
     struct AudioSession* session = calloc(1, sizeof(struct AudioSession));
     if (!session) {
@@ -441,13 +441,13 @@ struct AudioSession* audio_session_create(const char* device_id, int sample_rate
     return session;
 }
 
-void audio_session_destroy(struct AudioSession* session) {
+void audio_pulse_session_destroy(struct AudioSession* session) {
     if (!session) {
         return;
     }
 
     if (atomic_load(&session->running)) {
-        audio_session_stop(session);
+        audio_pulse_session_stop(session);
     }
 
     if (session->stream) {
@@ -467,7 +467,7 @@ void audio_session_destroy(struct AudioSession* session) {
     free(session);
 }
 
-int audio_session_start(struct AudioSession* session,
+int audio_pulse_session_start(struct AudioSession* session,
                         AudioFrameCallback callback,
                         void* user_data) {
     if (!session || !callback) {
@@ -556,7 +556,7 @@ int audio_session_start(struct AudioSession* session,
     return 0;
 }
 
-void audio_session_stop(struct AudioSession* session) {
+void audio_pulse_session_stop(struct AudioSession* session) {
     if (!session || !atomic_load(&session->running)) {
         return;
     }
@@ -576,14 +576,14 @@ void audio_session_stop(struct AudioSession* session) {
     pa_threaded_mainloop_stop(session->mainloop);
 }
 
-int audio_session_sample_rate(struct AudioSession* session) {
+int audio_pulse_session_sample_rate(struct AudioSession* session) {
     if (!session) {
         return 0;
     }
     return session->sample_rate;
 }
 
-int audio_session_channels(struct AudioSession* session) {
+int audio_pulse_session_channels(struct AudioSession* session) {
     if (!session) {
         return 0;
     }

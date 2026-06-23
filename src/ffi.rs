@@ -3,4 +3,8 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+#[cfg(enable_coreaudio)]
+include!(concat!(env!("OUT_DIR"), "/bindings_coreaudio.rs"));
+
+#[cfg(any(enable_pulse, enable_pipewire))]
+include!(concat!(env!("OUT_DIR"), "/bindings_linux.rs"));
