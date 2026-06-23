@@ -1,6 +1,8 @@
 //! プラットフォーム非依存の共通オーディオ型定義
 
 use crate::error::{Error, Result};
+
+#[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
 use crate::ffi;
 
 /// オーディオデバイスの種類
@@ -21,6 +23,7 @@ pub enum AudioFormat {
     F32,
 }
 
+#[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
 impl AudioDeviceType {
     pub(crate) fn from_ffi(device_type: i32) -> Result<Self> {
         match device_type {
@@ -31,6 +34,7 @@ impl AudioDeviceType {
     }
 }
 
+#[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
 impl AudioFormat {
     pub(crate) fn from_ffi(format: i32) -> Result<Self> {
         match format {
