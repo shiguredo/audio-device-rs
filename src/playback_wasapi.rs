@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use windows::{
-    Win32::Foundation::*, Win32::Media::Audio::*, Win32::Media::KernelStreaming::*,
-    Win32::Media::Multimedia::*, Win32::System::Com::*, Win32::System::Threading::*,
+    Win32::Foundation::*, Win32::Media::Audio::*, Win32::System::Com::*,
+    Win32::System::Threading::*,
 };
 
 use crate::common::{AudioDeviceType, AudioFormat, AudioPlaybackConfig, PlaybackFrame};
@@ -58,17 +58,7 @@ impl WasapiPlaybackImpl {
                 .map_err(|_| Error::DeviceAccessDenied)?;
             let wave_format = &*mix_format;
 
-            let format_tag = wave_format.wFormatTag;
-            let format = if format_tag == WAVE_FORMAT_IEEE_FLOAT as u16
-                || (format_tag == WAVE_FORMAT_EXTENSIBLE as u16 && {
-                    let ext = mix_format as *const WAVEFORMATEXTENSIBLE;
-                    std::ptr::addr_of!((*ext).SubFormat).read_unaligned()
-                        == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
-                }) {
-                AudioFormat::F32
-            } else {
-                AudioFormat::S16
-            };
+            let format = crate::device_wasapi::determine_audio_format(mix_format);
 
             let sample_rate = wave_format.nSamplesPerSec as i32;
             let channels = wave_format.nChannels as i32;
