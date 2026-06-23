@@ -4,7 +4,6 @@ pub enum Error {
     DeviceAccessDenied,
     SessionCreateFailed,
     SessionStartFailed,
-    #[cfg(target_os = "windows")]
     ComInitFailed,
     NullPointer(&'static str),
     InvalidChannels,
@@ -20,7 +19,6 @@ impl std::fmt::Display for Error {
             Error::DeviceAccessDenied => write!(f, "audio access denied"),
             Error::SessionCreateFailed => write!(f, "failed to create audio session"),
             Error::SessionStartFailed => write!(f, "failed to start audio session"),
-            #[cfg(target_os = "windows")]
             Error::ComInitFailed => write!(
                 f,
                 "COM initialization failed: thread has incompatible apartment model"
