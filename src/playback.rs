@@ -52,6 +52,7 @@ impl AudioPlayback {
         }
     }
 
+    /// CoreAudio で再生を構築する。
     #[cfg(enable_coreaudio)]
     pub fn new_coreaudio<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
@@ -62,6 +63,7 @@ impl AudioPlayback {
         )))
     }
 
+    /// PulseAudio で再生を構築する。
     #[cfg(enable_pulse)]
     pub fn new_pulse<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
@@ -72,6 +74,7 @@ impl AudioPlayback {
         )?)))
     }
 
+    /// PipeWire で再生を構築する。
     #[cfg(enable_pipewire)]
     pub fn new_pipewire<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
@@ -82,6 +85,7 @@ impl AudioPlayback {
         )))
     }
 
+    /// WASAPI で再生を構築する。
     #[cfg(enable_wasapi)]
     pub fn new_wasapi<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
@@ -112,6 +116,7 @@ impl AudioPlayback {
         }
     }
 
+    /// 再生設定を取得する。
     pub fn config(&self) -> &AudioPlaybackConfig {
         match &self.0 {
             #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
@@ -121,6 +126,7 @@ impl AudioPlayback {
         }
     }
 
+    /// 実際のサンプルレートを取得する。
     pub fn sample_rate(&self) -> i32 {
         match &self.0 {
             #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
@@ -130,6 +136,7 @@ impl AudioPlayback {
         }
     }
 
+    /// 実際のチャンネル数を取得する。
     pub fn channels(&self) -> i32 {
         match &self.0 {
             #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
