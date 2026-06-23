@@ -15,7 +15,7 @@ use crate::capture_wasapi::WasapiCaptureImpl;
 /// オーディオキャプチャ。
 pub struct AudioCapture(AudioCaptureInner);
 
-enum AudioCaptureInner {
+pub(crate) enum AudioCaptureInner {
     #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
     Ffi(FfiCaptureImpl),
     #[cfg(enable_wasapi)]

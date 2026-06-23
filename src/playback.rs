@@ -15,7 +15,7 @@ use crate::playback_wasapi::WasapiPlaybackImpl;
 /// オーディオ再生。
 pub struct AudioPlayback(AudioPlaybackInner);
 
-enum AudioPlaybackInner {
+pub(crate) enum AudioPlaybackInner {
     #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
     Ffi(FfiPlaybackImpl),
     #[cfg(enable_wasapi)]
