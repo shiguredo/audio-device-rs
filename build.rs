@@ -14,7 +14,8 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(enable_default_pipewire)");
     println!("cargo::rustc-check-cfg=cfg(enable_default_wasapi)");
 
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let target_os =
+        env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS must be set by Cargo");
     let mut enable_default_count = 0;
 
     match target_os.as_str() {
@@ -59,15 +60,22 @@ fn main() {
         panic!("Multiple default backends selected. Enable exactly one default-* feature.");
     }
 
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let src_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("src");
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR must be set by Cargo"));
+    let src_dir = PathBuf::from(
+        env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set by Cargo"),
+    )
+    .join("src");
 
     match target_os.as_str() {
         "macos" => {
             if env::var("CARGO_FEATURE_COREAUDIO").is_ok() {
                 build_coreaudio(&src_dir);
-                let builder =
-                    Builder::default().header(src_dir.join("audio_coreaudio.h").to_str().unwrap());
+                let builder = Builder::default().header(
+                    src_dir
+                        .join("audio_coreaudio.h")
+                        .to_str()
+                        .expect("source path must be valid UTF-8"),
+                );
                 generate_bindings(builder, "bindings_coreaudio.rs", &out_dir);
             }
         }
@@ -84,10 +92,20 @@ fn main() {
             if has_pulse || has_pipewire {
                 let mut builder = Builder::default();
                 if has_pulse {
-                    builder = builder.header(src_dir.join("audio_pulse.h").to_str().unwrap());
+                    builder = builder.header(
+                        src_dir
+                            .join("audio_pulse.h")
+                            .to_str()
+                            .expect("source path must be valid UTF-8"),
+                    );
                 }
                 if has_pipewire {
-                    builder = builder.header(src_dir.join("audio_pipewire.h").to_str().unwrap());
+                    builder = builder.header(
+                        src_dir
+                            .join("audio_pipewire.h")
+                            .to_str()
+                            .expect("source path must be valid UTF-8"),
+                    );
                 }
                 generate_bindings(builder, "bindings_linux.rs", &out_dir);
             }
