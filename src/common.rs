@@ -1,6 +1,7 @@
 //! プラットフォーム非依存の共通オーディオ型定義
 
 use crate::error::{Error, Result};
+use crate::ffi;
 
 /// オーディオデバイスの種類
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,6 +19,26 @@ pub enum AudioFormat {
     S16,
     /// 32-bit float
     F32,
+}
+
+impl AudioDeviceType {
+    pub(crate) fn from_ffi(device_type: i32) -> Result<Self> {
+        match device_type {
+            x if x == ffi::AUDIO_DEVICE_TYPE_OUTPUT as i32 => Ok(AudioDeviceType::Output),
+            x if x == ffi::AUDIO_DEVICE_TYPE_INPUT as i32 => Ok(AudioDeviceType::Input),
+            other => Err(Error::UnknownDeviceType(other)),
+        }
+    }
+}
+
+impl AudioFormat {
+    pub(crate) fn from_ffi(format: i32) -> Result<Self> {
+        match format {
+            x if x == ffi::AUDIO_FORMAT_F32 as i32 => Ok(AudioFormat::F32),
+            x if x == ffi::AUDIO_FORMAT_S16 as i32 => Ok(AudioFormat::S16),
+            other => Err(Error::UnknownFormat(other)),
+        }
+    }
 }
 
 /// オーディオフレームデータ
