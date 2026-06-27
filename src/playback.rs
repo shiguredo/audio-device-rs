@@ -11,12 +11,11 @@ use crate::ffi;
 struct PlaybackContext {
     callback: Box<dyn Fn() -> Option<PlaybackFrame> + Send + Sync>,
 }
+
 /// オーディオ再生
 pub struct AudioPlayback {
     session: Option<NonNull<ffi::PlaybackSession>>,
     context: Option<Arc<PlaybackContext>>,
-    // C 側に渡している Arc の生ポインタ。start() で Arc::into_raw、stop() で Arc::from_raw する
-    context_ptr: Option<*const PlaybackContext>,
     config: AudioPlaybackConfig,
     actual_sample_rate: i32,
     actual_channels: i32,
@@ -54,7 +53,6 @@ impl AudioPlayback {
         Ok(Self {
             session: Some(session),
             context: Some(context),
-            context_ptr: None,
             config,
             actual_sample_rate,
             actual_channels,
@@ -66,23 +64,17 @@ impl AudioPlayback {
         let session = self.session.ok_or(Error::SessionStartFailed)?;
         let context = self.context.as_ref().ok_or(Error::SessionStartFailed)?;
 
-        // Arc::clone で参照カウントをインクリメントし、C 側に所有権を渡す
-        let raw = Arc::into_raw(Arc::clone(context));
+        // Arc::as_ptr は所有権を移動しない。
+        // AudioPlayback の生存期間中は Arc が生き続けるため、C 側からのコールバックは安全に参照できる。
+        let context_ptr = Arc::as_ptr(context) as *mut std::ffi::c_void;
         let ret = unsafe {
-            ffi::playback_session_start(
-                session.as_ptr(),
-                Some(playback_callback),
-                raw as *mut std::ffi::c_void,
-            )
+            ffi::playback_session_start(session.as_ptr(), Some(playback_callback), context_ptr)
         };
 
         if ret < 0 {
-            // 失敗した場合は Arc を解放して参照カウントを戻す
-            unsafe { Arc::from_raw(raw) };
             return Err(Error::SessionStartFailed);
         }
 
-        self.context_ptr = Some(raw);
         Ok(())
     }
 
@@ -90,10 +82,6 @@ impl AudioPlayback {
     pub fn stop(&mut self) {
         if let Some(session) = self.session {
             unsafe { ffi::playback_session_stop(session.as_ptr()) };
-            // stop 後は C 側がコールバックを呼ばないため Arc を解放する
-            if let Some(ptr) = self.context_ptr.take() {
-                unsafe { Arc::from_raw(ptr) };
-            }
         }
     }
 
@@ -125,6 +113,7 @@ impl Drop for AudioPlayback {
 // AudioPlayback はプラットフォーム固有の再生セッションを内部で管理し、
 // コールバックはスレッドセーフな Arc<PlaybackContext> を通じて処理される
 unsafe impl Send for AudioPlayback {}
+unsafe impl Sync for AudioPlayback {}
 
 extern "C" fn playback_callback(
     user_data: *mut std::ffi::c_void,
@@ -134,7 +123,7 @@ extern "C" fn playback_callback(
     _sample_rate: i32, // FFI シグネチャ上必要だが Rust 側ではフォーマット変換に不要
     format: i32,
 ) -> i32 {
-    if user_data.is_null() || buffer.is_null() || frames <= 0 {
+    if user_data.is_null() || buffer.is_null() || frames <= 0 || channels <= 0 {
         return 0;
     }
 
@@ -142,48 +131,88 @@ extern "C" fn playback_callback(
     // context の生存期間は AudioPlayback によって保証される
     let context = unsafe { &*(user_data as *const PlaybackContext) };
 
-    let frame_opt = (context.callback)();
+    let audio_format = match AudioFormat::from_ffi(format) {
+        Ok(f) => f,
+        Err(_) => return 0,
+    };
+    let bytes_per_sample: usize = match audio_format {
+        AudioFormat::S16 => 2,
+        AudioFormat::F32 => 4,
+    };
+
+    let Some(buffer_size) = (frames as usize)
+        .checked_mul(channels as usize)
+        .and_then(|n| n.checked_mul(bytes_per_sample))
+    else {
+        return 0;
+    };
+
+    // ユーザーコールバックの panic は FFI 境界を越えて unwind しないようにする
+    let frame_opt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (context.callback)()))
+        .unwrap_or(None);
 
     let Some(frame) = frame_opt else {
         return 0;
     };
 
-    let audio_format = AudioFormat::from_ffi(format);
-    let bytes_per_sample = match audio_format {
-        AudioFormat::S16 => 2,
-        AudioFormat::F32 => 4,
-    };
-    let buffer_size = (frames * channels * bytes_per_sample) as usize;
+    let dst = buffer as *mut u8;
 
     // フレームデータをバッファにコピー
     if frame.format == audio_format {
         let copy_len = frame.data.len().min(buffer_size);
+        // バッファ境界内でサンプル単位のコピーを行う
+        let sample_size = channels as usize * bytes_per_sample;
+        let copy_frames = copy_len / sample_size;
+        let copy_bytes = copy_frames * sample_size;
         unsafe {
-            std::ptr::copy_nonoverlapping(frame.data.as_ptr(), buffer as *mut u8, copy_len);
+            std::ptr::copy_nonoverlapping(frame.data.as_ptr(), dst, copy_bytes);
+            // 残りを無音で埋める
+            if copy_bytes < buffer_size {
+                std::ptr::write_bytes(dst.add(copy_bytes), 0, buffer_size - copy_bytes);
+            }
         }
-        copy_len as i32 / (channels * bytes_per_sample)
+        copy_frames as i32
     } else if frame.format == AudioFormat::F32 && audio_format == AudioFormat::S16 {
         // F32 -> S16 変換
-        let src = unsafe {
-            std::slice::from_raw_parts(frame.data.as_ptr() as *const f32, frame.data.len() / 4)
-        };
-        let dst = unsafe { std::slice::from_raw_parts_mut(buffer as *mut i16, buffer_size / 2) };
-        let copy_len = src.len().min(dst.len());
-        for i in 0..copy_len {
-            dst[i] = (src[i] * 32767.0).clamp(-32768.0, 32767.0) as i16;
+        // Vec<u8> のアライメントは 1 なので read_unaligned で読み取る
+        let src_count = frame.data.len() / 4;
+        let dst_count = buffer_size / 2;
+        let copy_len = src_count.min(dst_count);
+        let src_ptr = frame.data.as_ptr() as *const f32;
+        unsafe {
+            for i in 0..copy_len {
+                let sample = src_ptr.add(i).read_unaligned();
+                let clamped = if sample.is_nan() {
+                    0.0
+                } else {
+                    sample.clamp(-1.0, 1.0)
+                };
+                (dst as *mut i16)
+                    .add(i)
+                    .write_unaligned((clamped * 32767.0) as i16);
+            }
+            // 残りを無音で埋める
+            std::ptr::write_bytes((dst as *mut i16).add(copy_len), 0, dst_count - copy_len);
         }
-        copy_len as i32 / channels
+        (copy_len as i32) / channels
     } else if frame.format == AudioFormat::S16 && audio_format == AudioFormat::F32 {
         // S16 -> F32 変換
-        let src = unsafe {
-            std::slice::from_raw_parts(frame.data.as_ptr() as *const i16, frame.data.len() / 2)
-        };
-        let dst = unsafe { std::slice::from_raw_parts_mut(buffer as *mut f32, buffer_size / 4) };
-        let copy_len = src.len().min(dst.len());
-        for i in 0..copy_len {
-            dst[i] = src[i] as f32 / 32768.0;
+        // Vec<u8> のアライメントは 1 なので read_unaligned で読み取る
+        let src_count = frame.data.len() / 2;
+        let dst_count = buffer_size / 4;
+        let copy_len = src_count.min(dst_count);
+        let src_ptr = frame.data.as_ptr() as *const i16;
+        unsafe {
+            for i in 0..copy_len {
+                let sample = src_ptr.add(i).read_unaligned();
+                (dst as *mut f32)
+                    .add(i)
+                    .write_unaligned(sample as f32 / 32768.0);
+            }
+            // 残りを無音で埋める
+            std::ptr::write_bytes((dst as *mut f32).add(copy_len), 0, dst_count - copy_len);
         }
-        copy_len as i32 / channels
+        (copy_len as i32) / channels
     } else {
         0
     }

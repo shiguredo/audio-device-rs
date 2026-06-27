@@ -626,50 +626,52 @@ static void playback_state_callback(pa_context* c, void* userdata) {
 static void stream_write_callback(pa_stream* s, size_t nbytes, void* userdata) {
     struct PlaybackSession* session = userdata;
 
+    if (nbytes == 0) {
+        return;
+    }
+
+    void* buf;
+    size_t len = nbytes;
+
+    if (pa_stream_begin_write(s, &buf, &len) < 0 || !buf) {
+        return;
+    }
+
     if (!atomic_load(&session->running) || !session->callback) {
         // 無音を書き込む
-        void* buf;
-        size_t len = nbytes;
-        if (pa_stream_begin_write(s, &buf, &len) >= 0 && buf) {
-            memset(buf, 0, len);
-            pa_stream_write(s, buf, len, NULL, 0, PA_SEEK_RELATIVE);
-        }
+        memset(buf, 0, len);
+        pa_stream_write(s, buf, len, NULL, 0, PA_SEEK_RELATIVE);
         return;
     }
 
     int bytes_per_sample = 2;  // S16
     int frame_size = bytes_per_sample * session->channels;
+    int frames = (int)(len / frame_size);
 
-    while (nbytes > 0) {
-        void* buf;
-        size_t len = nbytes;
+    if (frames <= 0) {
+        memset(buf, 0, len);
+        pa_stream_write(s, buf, len, NULL, 0, PA_SEEK_RELATIVE);
+        return;
+    }
 
-        if (pa_stream_begin_write(s, &buf, &len) < 0 || !buf) {
-            break;
+    int written = session->callback(session->user_data, buf, frames,
+                                     session->channels, session->sample_rate,
+                                     AUDIO_FORMAT_S16);
+
+    if (written <= 0) {
+        memset(buf, 0, len);
+    } else {
+        if (written > frames) {
+            written = frames;
         }
-
-        int frames = (int)(len / frame_size);
-        if (frames <= 0) {
-            memset(buf, 0, len);
-            pa_stream_write(s, buf, len, NULL, 0, PA_SEEK_RELATIVE);
-            break;
-        }
-
-        int written = session->callback(session->user_data, buf, frames,
-                                         session->channels, session->sample_rate,
-                                         AUDIO_FORMAT_S16);
-
-        if (written <= 0) {
-            memset(buf, 0, len);
-        } else if (written < frames) {
+        if (written < frames) {
             // 残りを無音で埋める
             int written_bytes = written * frame_size;
             memset((uint8_t*)buf + written_bytes, 0, len - written_bytes);
         }
-
-        pa_stream_write(s, buf, len, NULL, 0, PA_SEEK_RELATIVE);
-        nbytes -= len;
     }
+
+    pa_stream_write(s, buf, len, NULL, 0, PA_SEEK_RELATIVE);
 }
 
 // 再生ストリーム状態コールバック

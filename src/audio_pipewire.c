@@ -623,17 +623,18 @@ struct PlaybackSession {
 static void playback_on_process(void* userdata) {
     struct PlaybackSession* session = userdata;
 
-    if (!atomic_load(&session->running)) {
-        return;
-    }
-
     struct pw_buffer* buf = pw_stream_dequeue_buffer(session->stream);
     if (!buf) {
         return;
     }
 
+    if (!atomic_load(&session->running)) {
+        pw_stream_queue_buffer(session->stream, buf);
+        return;
+    }
+
     struct spa_buffer* spa_buf = buf->buffer;
-    if (!spa_buf->datas[0].data) {
+    if (spa_buf->n_datas < 1 || !spa_buf->datas[0].data || !spa_buf->datas[0].chunk) {
         pw_stream_queue_buffer(session->stream, buf);
         return;
     }
@@ -651,18 +652,18 @@ static void playback_on_process(void* userdata) {
                                          AUDIO_FORMAT_S16);
 
         if (written <= 0) {
-            memset(data, 0, max_size);
-            spa_buf->datas[0].chunk->size = max_size;
+            memset(data, 0, frames * frame_size);
+            spa_buf->datas[0].chunk->size = frames * frame_size;
         } else if (written < frames) {
             int written_bytes = written * frame_size;
-            memset((uint8_t*)data + written_bytes, 0, max_size - written_bytes);
-            spa_buf->datas[0].chunk->size = max_size;
+            memset((uint8_t*)data + written_bytes, 0, (frames - written) * frame_size);
+            spa_buf->datas[0].chunk->size = frames * frame_size;
         } else {
             spa_buf->datas[0].chunk->size = frames * frame_size;
         }
     } else {
-        memset(data, 0, max_size);
-        spa_buf->datas[0].chunk->size = max_size;
+        memset(data, 0, frames * frame_size);
+        spa_buf->datas[0].chunk->size = frames * frame_size;
     }
 
     spa_buf->datas[0].chunk->offset = 0;
@@ -834,6 +835,14 @@ int playback_session_start(struct PlaybackSession* session,
         pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio",
                           PW_KEY_MEDIA_CATEGORY, "Playback",
                           PW_KEY_MEDIA_ROLE, "Communication", NULL);
+    if (!props) {
+        spa_hook_remove(&session->core_listener);
+        pw_core_disconnect(session->core);
+        session->core = NULL;
+        pw_thread_loop_unlock(session->thread_loop);
+        pw_thread_loop_stop(session->thread_loop);
+        return -4;
+    }
 
     if (session->device_id) {
         pw_properties_set(props, PW_KEY_TARGET_OBJECT,
@@ -844,6 +853,7 @@ int playback_session_start(struct PlaybackSession* session,
     session->stream =
         pw_stream_new(session->core, "audio-playback", props);
     if (!session->stream) {
+        pw_properties_free(props);
         spa_hook_remove(&session->core_listener);
         pw_core_disconnect(session->core);
         session->core = NULL;

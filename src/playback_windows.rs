@@ -165,7 +165,6 @@ impl AudioPlayback {
         let audio_client = SendPtr(session.audio_client.clone());
         let event_handle = SendHandle(session.event_handle);
         let format = session.format;
-        let sample_rate = session.sample_rate;
         let channels = session.channels;
         let buffer_frames = session.buffer_frames;
         let context_clone = Arc::clone(context);
@@ -179,7 +178,6 @@ impl AudioPlayback {
                     audio_client.into_inner(),
                     event_handle.into_inner(),
                     format,
-                    sample_rate,
                     channels,
                     buffer_frames,
                     context_clone,
@@ -255,13 +253,11 @@ unsafe impl Send for AudioPlayback {}
 unsafe impl Sync for AudioPlayback {}
 
 /// 再生スレッド関数
-#[allow(clippy::too_many_arguments)]
 fn playback_thread_func(
     render_client: IAudioRenderClient,
     audio_client: IAudioClient,
     event_handle: HANDLE,
     format: AudioFormat,
-    _sample_rate: i32,
     channels: i32,
     buffer_frames: u32,
     context: Arc<PlaybackContext>,

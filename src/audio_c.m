@@ -384,57 +384,60 @@ int audio_device_type(struct AudioDevice* device) {
 }
 
 static AudioDeviceID find_device_by_uid(const char* uid) {
-    AudioObjectPropertyAddress propertyAddress = {
-        kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal,
-        kAudioObjectPropertyElementMain};
-
-    UInt32 dataSize = 0;
-    OSStatus status = AudioObjectGetPropertyDataSize(
-        kAudioObjectSystemObject, &propertyAddress, 0, NULL, &dataSize);
-
-    if (status != noErr) {
-        return kAudioObjectUnknown;
-    }
-
-    UInt32 deviceCount = dataSize / sizeof(AudioDeviceID);
-    AudioDeviceID* deviceIDs = (AudioDeviceID*)malloc(dataSize);
-    if (!deviceIDs) {
-        return kAudioObjectUnknown;
-    }
-
-    status = AudioObjectGetPropertyData(kAudioObjectSystemObject,
-                                         &propertyAddress, 0, NULL, &dataSize,
-                                         deviceIDs);
-
-    if (status != noErr) {
-        free(deviceIDs);
-        return kAudioObjectUnknown;
-    }
-
-    AudioDeviceID foundDevice = kAudioObjectUnknown;
-    NSString* targetUID = [NSString stringWithUTF8String:uid];
-
-    for (UInt32 i = 0; i < deviceCount; i++) {
-        CFStringRef deviceUID = NULL;
-        AudioObjectPropertyAddress uidAddress = {
-            kAudioDevicePropertyDeviceUID, kAudioObjectPropertyScopeGlobal,
+    // Rust スレッドから呼ばれる可能性があるため autoreleasepool を設定する
+    @autoreleasepool {
+        AudioObjectPropertyAddress propertyAddress = {
+            kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal,
             kAudioObjectPropertyElementMain};
-        UInt32 uidSize = sizeof(CFStringRef);
-        status = AudioObjectGetPropertyData(deviceIDs[i], &uidAddress, 0, NULL,
-                                             &uidSize, &deviceUID);
 
-        if (status == noErr && deviceUID) {
-            if ([(__bridge NSString*)deviceUID isEqualToString:targetUID]) {
-                foundDevice = deviceIDs[i];
-                CFRelease(deviceUID);
-                break;
-            }
-            CFRelease(deviceUID);
+        UInt32 dataSize = 0;
+        OSStatus status = AudioObjectGetPropertyDataSize(
+            kAudioObjectSystemObject, &propertyAddress, 0, NULL, &dataSize);
+
+        if (status != noErr) {
+            return kAudioObjectUnknown;
         }
-    }
 
-    free(deviceIDs);
-    return foundDevice;
+        UInt32 deviceCount = dataSize / sizeof(AudioDeviceID);
+        AudioDeviceID* deviceIDs = (AudioDeviceID*)malloc(dataSize);
+        if (!deviceIDs) {
+            return kAudioObjectUnknown;
+        }
+
+        status = AudioObjectGetPropertyData(kAudioObjectSystemObject,
+                                             &propertyAddress, 0, NULL, &dataSize,
+                                             deviceIDs);
+
+        if (status != noErr) {
+            free(deviceIDs);
+            return kAudioObjectUnknown;
+        }
+
+        AudioDeviceID foundDevice = kAudioObjectUnknown;
+        NSString* targetUID = [NSString stringWithUTF8String:uid];
+
+        for (UInt32 i = 0; i < deviceCount; i++) {
+            CFStringRef deviceUID = NULL;
+            AudioObjectPropertyAddress uidAddress = {
+                kAudioDevicePropertyDeviceUID, kAudioObjectPropertyScopeGlobal,
+                kAudioObjectPropertyElementMain};
+            UInt32 uidSize = sizeof(CFStringRef);
+            status = AudioObjectGetPropertyData(deviceIDs[i], &uidAddress, 0, NULL,
+                                                 &uidSize, &deviceUID);
+
+            if (status == noErr && deviceUID) {
+                if ([(__bridge NSString*)deviceUID isEqualToString:targetUID]) {
+                    foundDevice = deviceIDs[i];
+                    CFRelease(deviceUID);
+                    break;
+                }
+                CFRelease(deviceUID);
+            }
+        }
+
+        free(deviceIDs);
+        return foundDevice;
+    }
 }
 
 struct AudioSession* audio_session_create(const char* device_id,
@@ -616,6 +619,10 @@ static void audio_output_callback(void* user_data,
                                      (int)session->format.mSampleRate,
                                      format);
 
+    if (written > frames) {
+        written = frames;
+    }
+
     if (written <= 0) {
         // コールバックがデータを返さなかった場合は無音で埋める
         memset(buffer->mAudioData, 0, buffer->mAudioDataByteSize);
@@ -673,21 +680,34 @@ struct PlaybackSession* playback_session_create(const char* device_id,
     // デバイスを設定
     if (device_id) {
         AudioDeviceID deviceID = find_device_by_uid(device_id);
-        if (deviceID != kAudioObjectUnknown) {
-            CFStringRef deviceUID =
-                CFStringCreateWithCString(NULL, device_id, kCFStringEncodingUTF8);
-            if (deviceUID) {
-                AudioQueueSetProperty(session->queue,
-                                       kAudioQueueProperty_CurrentDevice,
-                                       &deviceUID, sizeof(CFStringRef));
-                CFRelease(deviceUID);
-            }
+        if (deviceID == kAudioObjectUnknown) {
+            AudioQueueDispose(session->queue, true);
+            free(session);
+            return NULL;
+        }
+        CFStringRef deviceUID =
+            CFStringCreateWithCString(NULL, device_id, kCFStringEncodingUTF8);
+        if (!deviceUID) {
+            AudioQueueDispose(session->queue, true);
+            free(session);
+            return NULL;
+        }
+        OSStatus status = AudioQueueSetProperty(session->queue,
+                                   kAudioQueueProperty_CurrentDevice,
+                                   &deviceUID, sizeof(CFStringRef));
+        CFRelease(deviceUID);
+        if (status != noErr) {
+            AudioQueueDispose(session->queue, true);
+            free(session);
+            return NULL;
         }
     }
 
     // バッファを作成（10ms 分 x 3）
+    // mSampleRate は整数値のサンプルレートなので直接キャストする
     UInt32 bufferByteSize =
-        session->format.mSampleRate * session->format.mBytesPerFrame / 100;
+        ((UInt32)session->format.mSampleRate * session->format.mBytesPerFrame) /
+        100;
 
     for (int i = 0; i < 3; i++) {
         status = AudioQueueAllocateBuffer(session->queue, bufferByteSize,
