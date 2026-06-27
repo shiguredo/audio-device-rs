@@ -3,7 +3,7 @@
 - Priority: Medium
 - Created: 2026-06-27
 - Completed: {YYYY-MM-DD}
-- Model: Kimi Code CLI
+- Model: Kimi K2.7 Code
 - Branch: feature/audio-output
 - Polished: 2026-06-27
 
