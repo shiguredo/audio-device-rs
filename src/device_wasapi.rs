@@ -211,8 +211,8 @@ pub(crate) fn get_device_by_id(
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
                 .map_err(|_| Error::DeviceAccessDenied)?;
-        // 指定されたデバイスを取得
         if let Some(id) = device_id {
+            // 指定されたデバイスを取得
             let wide_id: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
             let pcwstr = PCWSTR::from_raw(wide_id.as_ptr());
             enumerator

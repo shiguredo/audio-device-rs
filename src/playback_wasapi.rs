@@ -149,9 +149,6 @@ impl WasapiPlaybackImpl {
                 .map_err(|_| Error::SessionStartFailed)?;
         }
 
-        // スレッド生成成功後に running フラグを立てる
-        context.running.store(true, Ordering::Release);
-
         // 再生に必要なデータをクローン（Send ラッパーで包む）
         let render_client = SendPtr(session.render_client.clone());
         let audio_client = SendPtr(session.audio_client.clone());
@@ -161,6 +158,9 @@ impl WasapiPlaybackImpl {
         let channels = session.channels;
         let buffer_frames = session.buffer_frames;
         let context = Arc::clone(context);
+
+        // スレッド生成前に running フラグを立てる
+        context.running.store(true, Ordering::Release);
 
         // 再生スレッドを開始
         let handle = thread::Builder::new()
@@ -294,7 +294,6 @@ fn playback_thread_func(
 
             if let Some(frame) = frame_opt {
                 // フレームデータをバッファにコピー
-                // フォーマット変換が必要な場合の処理
                 let bytes_per_sample: usize = match format {
                     AudioFormat::S16 => 2,
                     AudioFormat::F32 => 4,
@@ -310,8 +309,9 @@ fn playback_thread_func(
                     }
                 };
 
-                // F32 -> S16 変換
+                // フォーマット変換が必要な場合の処理
                 if frame.format == AudioFormat::F32 && format == AudioFormat::S16 {
+                    // F32 -> S16 変換
                     // Vec<u8> のアライメントは 1 なので read_unaligned で読み取る
                     let src_count = frame.data.len() / 4;
                     let dst_s16 =
