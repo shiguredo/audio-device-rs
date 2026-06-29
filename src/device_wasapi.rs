@@ -20,12 +20,19 @@ impl SendHandle {
 
 pub(crate) struct SendPtr<T>(pub(crate) T);
 
+// Safety: COM オブジェクトは MTA (COINIT_MULTITHREADED) で初期化しており、
+// MTA オブジェクトはスレッド間で安全に移送できる。
+// 各具体型に対する unsafe impl Send は、利用側（capture_wasapi.rs, playback_wasapi.rs）で宣言する。
 impl<T> SendPtr<T> {
     pub(crate) fn into_inner(self) -> T {
         self.0
     }
 }
 
+/// COM を MTA モードで初期化する。
+/// 既に MTA で初期化済み (S_FALSE) の場合は成功とする。
+/// 呼び出し元スレッドが STA で初期化済みの場合は RPC_E_CHANGED_MODE が返るため、
+/// エラーとして報告する。
 pub(crate) fn init_com_mta() -> Result<()> {
     unsafe {
         let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -37,6 +44,7 @@ pub(crate) fn init_com_mta() -> Result<()> {
     }
 }
 
+/// オーディオデバイス
 pub(crate) struct WasapiDeviceImpl {
     name: String,
     unique_id: String,
@@ -67,6 +75,7 @@ impl WasapiDeviceImpl {
     }
 }
 
+/// オーディオデバイスリスト
 pub(crate) struct WasapiDeviceListImpl {
     pub(crate) devices: Vec<WasapiDeviceImpl>,
 }
@@ -85,15 +94,18 @@ impl WasapiDeviceListImpl {
 fn enumerate_devices_by_type(device_type: AudioDeviceType) -> Result<Vec<WasapiDeviceImpl>> {
     init_com_mta()?;
     unsafe {
+        // デバイス列挙子を作成
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
                 .map_err(|_| Error::DeviceAccessDenied)?;
 
+        // デバイスタイプに応じてデータフローを選択
         let data_flow = match device_type {
             AudioDeviceType::Input => eCapture,
             AudioDeviceType::Output => eRender,
         };
 
+        // デバイスを列挙
         let collection: IMMDeviceCollection = enumerator
             .EnumAudioEndpoints(data_flow, DEVICE_STATE_ACTIVE)
             .map_err(|_| Error::DeviceAccessDenied)?;
@@ -108,16 +120,19 @@ fn enumerate_devices_by_type(device_type: AudioDeviceType) -> Result<Vec<WasapiD
                 Ok(d) => d,
                 Err(_) => continue,
             };
+            // デバイス ID を取得
             let device_id = match device.GetId() {
                 Ok(id) => id.to_string().unwrap_or_default(),
                 Err(_) => continue,
             };
+            // デバイスプロパティを取得
             let props = device.OpenPropertyStore(STGM_READ);
             let name = if let Ok(props) = props {
                 get_device_name(&props).unwrap_or_else(|| "Unknown Device".to_string())
             } else {
                 "Unknown Device".to_string()
             };
+            // フォーマット情報を取得
             let (channels, sample_rate) = get_device_format(&device).unwrap_or((2, 48000));
             devices.push(WasapiDeviceImpl {
                 name,
@@ -131,6 +146,7 @@ fn enumerate_devices_by_type(device_type: AudioDeviceType) -> Result<Vec<WasapiD
     }
 }
 
+/// デバイス名を取得
 fn get_device_name(props: &IPropertyStore) -> Option<String> {
     unsafe {
         match props.GetValue(&PKEY_Device_FriendlyName as *const _ as *const _) {
@@ -150,6 +166,7 @@ fn get_device_name(props: &IPropertyStore) -> Option<String> {
     }
 }
 
+/// デバイスのフォーマット情報を取得
 fn get_device_format(device: &IMMDevice) -> Option<(i32, i32)> {
     unsafe {
         let audio_client: IAudioClient = device.Activate(CLSCTX_ALL, None).ok()?;
@@ -161,6 +178,7 @@ fn get_device_format(device: &IMMDevice) -> Option<(i32, i32)> {
     }
 }
 
+/// オーディオフォーマットを判定
 pub(crate) unsafe fn determine_audio_format(wave_format: *const WAVEFORMATEX) -> AudioFormat {
     let format_tag = unsafe { (*wave_format).wFormatTag };
 
@@ -182,15 +200,18 @@ pub(crate) unsafe fn determine_audio_format(wave_format: *const WAVEFORMATEX) ->
     AudioFormat::S16
 }
 
+/// デバイス ID からデバイスを取得
 pub(crate) fn get_device_by_id(
     device_id: Option<&str>,
     device_type: AudioDeviceType,
 ) -> Result<IMMDevice> {
     init_com_mta()?;
     unsafe {
+        // デバイス列挙子を作成
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
                 .map_err(|_| Error::DeviceAccessDenied)?;
+        // 指定されたデバイスを取得
         if let Some(id) = device_id {
             let wide_id: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
             let pcwstr = PCWSTR::from_raw(wide_id.as_ptr());
@@ -198,6 +219,7 @@ pub(crate) fn get_device_by_id(
                 .GetDevice(pcwstr)
                 .map_err(|_| Error::DeviceNotFound)
         } else {
+            // デフォルトデバイスを取得
             let data_flow = match device_type {
                 AudioDeviceType::Input => eCapture,
                 AudioDeviceType::Output => eRender,
