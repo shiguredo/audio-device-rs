@@ -7,35 +7,18 @@ fn arb_error() -> impl Strategy<Value = Error> {
     ));
     let null_pointer = ".*".prop_map(|s| Error::NullPointer(Box::leak(s.into_boxed_str())));
 
-    #[cfg(target_os = "windows")]
-    {
-        prop_oneof![
-            Just(Error::DeviceNotFound),
-            Just(Error::DeviceAccessDenied),
-            Just(Error::SessionCreateFailed),
-            Just(Error::SessionStartFailed),
-            Just(Error::InvalidChannels),
-            data_too_large,
-            any::<i32>().prop_map(Error::UnknownFormat),
-            any::<i32>().prop_map(Error::UnknownDeviceType),
-            null_pointer,
-            Just(Error::ComInitFailed),
-        ]
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        prop_oneof![
-            Just(Error::DeviceNotFound),
-            Just(Error::DeviceAccessDenied),
-            Just(Error::SessionCreateFailed),
-            Just(Error::SessionStartFailed),
-            Just(Error::InvalidChannels),
-            data_too_large,
-            any::<i32>().prop_map(Error::UnknownFormat),
-            any::<i32>().prop_map(Error::UnknownDeviceType),
-            null_pointer,
-        ]
-    }
+    prop_oneof![
+        Just(Error::DeviceNotFound),
+        Just(Error::DeviceAccessDenied),
+        Just(Error::SessionCreateFailed),
+        Just(Error::SessionStartFailed),
+        Just(Error::InvalidChannels),
+        data_too_large,
+        any::<i32>().prop_map(Error::UnknownFormat),
+        any::<i32>().prop_map(Error::UnknownDeviceType),
+        null_pointer,
+        Just(Error::ComInitFailed),
+    ]
 }
 
 proptest! {

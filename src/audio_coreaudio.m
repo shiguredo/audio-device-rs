@@ -4,7 +4,7 @@
 #import <mach/mach_time.h>
 #include <stdatomic.h>
 
-#include "audio_c.h"
+#include "audio_coreaudio.h"
 
 // AudioDevice 構造体
 struct AudioDevice {
@@ -194,7 +194,7 @@ static int add_device_to_array(struct AudioDevice*** deviceArray,
     return 0;
 }
 
-int audio_enumerate_devices(struct AudioDevice*** devices, int* count) {
+int audio_coreaudio_enumerate_devices(struct AudioDevice*** devices, int* count) {
     if (!devices || !count) {
         return -1;
     }
@@ -331,7 +331,7 @@ int audio_enumerate_devices(struct AudioDevice*** devices, int* count) {
     return 0;
 }
 
-void audio_free_devices(struct AudioDevice** devices, int count) {
+void audio_coreaudio_free_devices(struct AudioDevice** devices, int count) {
     if (!devices) {
         return;
     }
@@ -346,35 +346,35 @@ void audio_free_devices(struct AudioDevice** devices, int count) {
     free(devices);
 }
 
-const char* audio_device_name(struct AudioDevice* device) {
+const char* audio_coreaudio_device_name(struct AudioDevice* device) {
     if (!device) {
         return NULL;
     }
     return device->name;
 }
 
-const char* audio_device_unique_id(struct AudioDevice* device) {
+const char* audio_coreaudio_device_unique_id(struct AudioDevice* device) {
     if (!device) {
         return NULL;
     }
     return device->unique_id;
 }
 
-int audio_device_channels(struct AudioDevice* device) {
+int audio_coreaudio_device_channels(struct AudioDevice* device) {
     if (!device) {
         return 0;
     }
     return device->channels;
 }
 
-int audio_device_sample_rate(struct AudioDevice* device) {
+int audio_coreaudio_device_sample_rate(struct AudioDevice* device) {
     if (!device) {
         return 0;
     }
     return device->sample_rate;
 }
 
-int audio_device_type(struct AudioDevice* device) {
+int audio_coreaudio_device_type(struct AudioDevice* device) {
     if (!device) {
         return AUDIO_DEVICE_TYPE_INPUT;
     }
@@ -435,7 +435,7 @@ static AudioDeviceID find_device_by_uid(const char* uid) {
     return foundDevice;
 }
 
-struct AudioSession* audio_session_create(const char* device_id,
+struct AudioSession* audio_coreaudio_session_create(const char* device_id,
                                            int sample_rate,
                                            int channels) {
     struct AudioSession* session =
@@ -506,20 +506,20 @@ struct AudioSession* audio_session_create(const char* device_id,
     return session;
 }
 
-void audio_session_destroy(struct AudioSession* session) {
+void audio_coreaudio_session_destroy(struct AudioSession* session) {
     if (!session) {
         return;
     }
 
     if (atomic_load(&session->running)) {
-        audio_session_stop(session);
+        audio_coreaudio_session_stop(session);
     }
 
     AudioQueueDispose(session->queue, true);
     free(session);
 }
 
-int audio_session_start(struct AudioSession* session,
+int audio_coreaudio_session_start(struct AudioSession* session,
                         AudioFrameCallback callback,
                          void* user_data) {
     if (!session || !callback) {
@@ -554,8 +554,12 @@ int audio_session_start(struct AudioSession* session,
     return 0;
 }
 
-void audio_session_stop(struct AudioSession* session) {
-    if (!session || !atomic_load(&session->running)) {
+void audio_coreaudio_session_stop(struct AudioSession* session) {
+    if (!session) {
+        return;
+    }
+
+    if (!atomic_load(&session->running)) {
         return;
     }
 
@@ -563,14 +567,14 @@ void audio_session_stop(struct AudioSession* session) {
     AudioQueueStop(session->queue, true);
 }
 
-int audio_session_sample_rate(struct AudioSession* session) {
+int audio_coreaudio_session_sample_rate(struct AudioSession* session) {
     if (!session) {
         return 0;
     }
     return (int)session->format.mSampleRate;
 }
 
-int audio_session_channels(struct AudioSession* session) {
+int audio_coreaudio_session_channels(struct AudioSession* session) {
     if (!session) {
         return 0;
     }

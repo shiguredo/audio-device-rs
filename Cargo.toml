@@ -31,7 +31,7 @@ pkg-config = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 # Microsoft 公式の Win32 API バインディング。必要な機能だけを feature で有効化する
-windows = { version = "0.62", features = [
+windows = { version = "0.62", default-features = false, optional = true, features = [
   # オーディオデバイス列挙に使う Function Discovery API
   "Win32_Devices_FunctionDiscovery",
   # HRESULT・HANDLE・BOOL などの Win32 基本型
@@ -59,6 +59,12 @@ windows = { version = "0.62", features = [
 ] }
 
 [features]
-default = ["pulse"]
-pipewire = []
+default = ["default-pulse", "default-coreaudio", "default-wasapi"]
+coreaudio = []
 pulse = []
+pipewire = []
+wasapi = ["dep:windows"]
+default-coreaudio = ["coreaudio"]
+default-pulse = ["pulse"]
+default-pipewire = ["pipewire"]
+default-wasapi = ["wasapi"]

@@ -10,9 +10,14 @@ use windows::{
     Win32::System::Performance::*, Win32::System::Threading::*,
 };
 
-use crate::common::{AudioCaptureConfig, AudioDeviceType, AudioFormat, AudioFrame, CaptureContext};
-use crate::device_windows::{SendHandle, SendPtr, get_device_by_id};
+use crate::common::{AudioCaptureConfig, AudioDeviceType, AudioFormat, AudioFrame};
+use crate::device_wasapi::{SendHandle, SendPtr, get_device_by_id};
 use crate::error::{Error, Result};
+
+pub(crate) struct WasapiCaptureContext {
+    pub(crate) callback: Box<dyn Fn(AudioFrame<'_>) + Send + Sync>,
+    pub(crate) running: AtomicBool,
+}
 
 struct SessionData {
     audio_client: IAudioClient,
@@ -27,43 +32,42 @@ struct SessionData {
 // MTA オブジェクトはスレッド間で安全に移送できる。
 unsafe impl Send for SendPtr<IAudioCaptureClient> {}
 
-pub struct AudioCapture {
+pub(crate) struct WasapiCaptureImpl {
     session: Option<SessionData>,
-    context: Option<Arc<CaptureContext>>,
+    context: Option<Arc<WasapiCaptureContext>>,
     capture_thread: Option<thread::JoinHandle<()>>,
     config: AudioCaptureConfig,
     actual_sample_rate: i32,
     actual_channels: i32,
 }
 
-impl AudioCapture {
+impl WasapiCaptureImpl {
     pub fn new<F>(config: AudioCaptureConfig, callback: F) -> Result<Self>
     where
         F: Fn(AudioFrame<'_>) + Send + Sync + 'static,
     {
-        crate::device_windows::init_com_mta()?;
-        unsafe {
-            // デバイスを取得（キャプチャなので入力デバイス）
-            let device = get_device_by_id(config.device_id.as_deref(), AudioDeviceType::Input)?;
+        // デバイスを取得（キャプチャなので入力デバイス）
+        let device = get_device_by_id(config.device_id.as_deref(), AudioDeviceType::Input)?;
 
+        unsafe {
             // オーディオクライアントを取得
             let audio_client: IAudioClient = device
                 .Activate(CLSCTX_ALL, None)
-                .map_err(|_| Error::SessionCreateFailed)?;
+                .map_err(|_| Error::DeviceAccessDenied)?;
 
             // ミックスフォーマットを取得
             let mix_format = audio_client
                 .GetMixFormat()
-                .map_err(|_| Error::SessionCreateFailed)?;
+                .map_err(|_| Error::DeviceAccessDenied)?;
+            let wave_format = &*mix_format;
 
             // フォーマット情報を取得
-            let sample_rate = (*mix_format).nSamplesPerSec as i32;
-            let channels = (*mix_format).nChannels as i32;
-            let format = crate::device_windows::determine_audio_format(mix_format);
+            let format = crate::device_wasapi::determine_audio_format(mix_format);
 
-            // イベントハンドルを作成
-            let event_handle =
-                CreateEventW(None, false, false, None).map_err(|_| Error::SessionCreateFailed)?;
+            let sample_rate = wave_format.nSamplesPerSec as i32;
+            let channels = wave_format.nChannels as i32;
+
+            CoTaskMemFree(Some(mix_format as *const _));
 
             // オーディオクライアントを初期化（10ms バッファ）
             let buffer_duration: i64 = 100_000; // 10ms in 100-nanosecond units
@@ -74,15 +78,18 @@ impl AudioCapture {
                     buffer_duration,
                     0,
                     mix_format,
-                    None,
+                    Some(std::ptr::null()),
                 )
-                .map_err(|_| {
-                    CoTaskMemFree(Some(mix_format as *const _));
-                    let _ = CloseHandle(event_handle);
-                    Error::SessionCreateFailed
-                })?;
+                .map_err(|_| Error::SessionCreateFailed)?;
 
-            CoTaskMemFree(Some(mix_format as *const _));
+            // キャプチャクライアントを取得
+            let capture_client: IAudioCaptureClient = audio_client
+                .GetService()
+                .map_err(|_| Error::SessionCreateFailed)?;
+
+            // イベントハンドルを作成
+            let event_handle =
+                CreateEventW(None, false, false, None).map_err(|_| Error::SessionCreateFailed)?;
 
             // イベントハンドルを設定
             audio_client.SetEventHandle(event_handle).map_err(|_| {
@@ -90,28 +97,20 @@ impl AudioCapture {
                 Error::SessionCreateFailed
             })?;
 
-            // キャプチャクライアントを取得
-            let capture_client: IAudioCaptureClient = audio_client.GetService().map_err(|_| {
-                let _ = CloseHandle(event_handle);
-                Error::SessionCreateFailed
-            })?;
-
-            let context = Arc::new(CaptureContext {
+            let context = Arc::new(WasapiCaptureContext {
                 callback: Box::new(callback),
                 running: AtomicBool::new(false),
             });
 
-            let session = SessionData {
-                audio_client,
-                capture_client,
-                event_handle,
-                format,
-                sample_rate,
-                channels,
-            };
-
             Ok(Self {
-                session: Some(session),
+                session: Some(SessionData {
+                    audio_client,
+                    capture_client,
+                    event_handle,
+                    format,
+                    sample_rate,
+                    channels,
+                }),
                 context: Some(context),
                 capture_thread: None,
                 config,
@@ -137,17 +136,20 @@ impl AudioCapture {
                 .map_err(|_| Error::SessionStartFailed)?;
         }
 
+        // スレッド生成成功後に running フラグを立てる
+        context.running.store(true, Ordering::Release);
+
         // キャプチャに必要なデータをクローン（Send ラッパーで包む）
         let capture_client = SendPtr(session.capture_client.clone());
         let event_handle = SendHandle(session.event_handle);
         let format = session.format;
         let sample_rate = session.sample_rate;
         let channels = session.channels;
-        let context_clone = Arc::clone(context);
+        let context = Arc::clone(context);
 
         // キャプチャスレッドを開始
         let handle = thread::Builder::new()
-            .name("audio-capture".into())
+            .name("audio-capture".to_string())
             .spawn(move || {
                 capture_thread_func(
                     capture_client.into_inner(),
@@ -155,15 +157,17 @@ impl AudioCapture {
                     format,
                     sample_rate,
                     channels,
-                    context_clone,
+                    context,
                 );
             })
-            .map_err(|_| Error::SessionStartFailed)?;
+            .map_err(|_| {
+                unsafe {
+                    let _ = session.audio_client.Stop();
+                }
+                Error::SessionCreateFailed
+            })?;
 
-        // スレッド生成成功後に running フラグを立てる
-        context.running.store(true, Ordering::Release);
         self.capture_thread = Some(handle);
-
         Ok(())
     }
 
@@ -207,10 +211,9 @@ impl AudioCapture {
     }
 }
 
-impl Drop for AudioCapture {
+impl Drop for WasapiCaptureImpl {
     fn drop(&mut self) {
         self.stop();
-
         if let Some(session) = self.session.take() {
             unsafe {
                 let _ = CloseHandle(session.event_handle);
@@ -219,8 +222,8 @@ impl Drop for AudioCapture {
     }
 }
 
-unsafe impl Send for AudioCapture {}
-unsafe impl Sync for AudioCapture {}
+unsafe impl Send for WasapiCaptureImpl {}
+unsafe impl Sync for WasapiCaptureImpl {}
 
 /// キャプチャスレッド関数
 fn capture_thread_func(
@@ -229,7 +232,7 @@ fn capture_thread_func(
     format: AudioFormat,
     sample_rate: i32,
     channels: i32,
-    context: Arc<CaptureContext>,
+    context: Arc<WasapiCaptureContext>,
 ) {
     unsafe {
         // ワーカースレッドの COM 参照カウント追加。
@@ -243,11 +246,9 @@ fn capture_thread_func(
         while context.running.load(Ordering::Acquire) {
             // イベント待機（10ms タイムアウト）
             let wait_result = WaitForSingleObject(event_handle, 10);
-
             if !context.running.load(Ordering::Acquire) {
                 break;
             }
-
             if wait_result != WAIT_OBJECT_0 && wait_result != WAIT_TIMEOUT {
                 continue;
             }
@@ -258,11 +259,9 @@ fn capture_thread_func(
                     Ok(len) => len,
                     Err(_) => break,
                 };
-
                 if packet_length == 0 {
                     break;
                 }
-
                 if !context.running.load(Ordering::Acquire) {
                     break;
                 }
@@ -270,7 +269,6 @@ fn capture_thread_func(
                 let mut data_ptr: *mut u8 = ptr::null_mut();
                 let mut frames_available: u32 = 0;
                 let mut flags: u32 = 0;
-
                 if capture_client
                     .GetBuffer(&mut data_ptr, &mut frames_available, &mut flags, None, None)
                     .is_err()
@@ -312,7 +310,6 @@ fn capture_thread_func(
                     }
 
                     let data = std::slice::from_raw_parts(data_ptr, data_size);
-
                     let frame = AudioFrame {
                         data,
                         frames: frames_available as i32,
@@ -321,16 +318,11 @@ fn capture_thread_func(
                         format,
                         timestamp_us,
                     };
-
-                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        (context.callback)(frame);
-                    }));
+                    (context.callback)(frame);
                 }
-
                 let _ = capture_client.ReleaseBuffer(frames_available);
             }
         }
-
         CoUninitialize();
     }
 }
