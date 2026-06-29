@@ -28,6 +28,8 @@ struct SessionData {
     channels: i32,
 }
 
+// Safety: IAudioCaptureClient は COM の MTA (COINIT_MULTITHREADED) で初期化しており、
+// MTA オブジェクトはスレッド間で安全に移送できる。
 unsafe impl Send for SendPtr<IAudioCaptureClient> {}
 
 pub(crate) struct WasapiCaptureImpl {
@@ -44,18 +46,22 @@ impl WasapiCaptureImpl {
     where
         F: Fn(AudioFrame<'_>) + Send + Sync + 'static,
     {
+        // デバイスを取得（キャプチャなので入力デバイス）
         let device = get_device_by_id(config.device_id.as_deref(), AudioDeviceType::Input)?;
 
         unsafe {
+            // オーディオクライアントを取得
             let audio_client: IAudioClient = device
                 .Activate(CLSCTX_ALL, None)
                 .map_err(|_| Error::DeviceAccessDenied)?;
 
+            // ミックスフォーマットを取得
             let mix_format = audio_client
                 .GetMixFormat()
                 .map_err(|_| Error::DeviceAccessDenied)?;
             let wave_format = &*mix_format;
 
+            // フォーマット情報を取得
             let format = crate::device_wasapi::determine_audio_format(mix_format);
 
             let sample_rate = wave_format.nSamplesPerSec as i32;
@@ -63,24 +69,29 @@ impl WasapiCaptureImpl {
 
             CoTaskMemFree(Some(mix_format as *const _));
 
+            // オーディオクライアントを初期化（10ms バッファ）
+            let buffer_duration: i64 = 100_000; // 10ms in 100-nanosecond units
             audio_client
                 .Initialize(
                     AUDCLNT_SHAREMODE_SHARED,
                     AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                    100_000, // 10ms
+                    buffer_duration,
                     0,
                     mix_format,
                     Some(std::ptr::null()),
                 )
                 .map_err(|_| Error::SessionCreateFailed)?;
 
+            // キャプチャクライアントを取得
             let capture_client: IAudioCaptureClient = audio_client
                 .GetService()
                 .map_err(|_| Error::SessionCreateFailed)?;
 
+            // イベントハンドルを作成
             let event_handle =
                 CreateEventW(None, false, false, None).map_err(|_| Error::SessionCreateFailed)?;
 
+            // イベントハンドルを設定
             audio_client.SetEventHandle(event_handle).map_err(|_| {
                 let _ = CloseHandle(event_handle);
                 Error::SessionCreateFailed
@@ -117,6 +128,7 @@ impl WasapiCaptureImpl {
             return Ok(());
         }
 
+        // オーディオクライアントを開始
         unsafe {
             session
                 .audio_client
@@ -124,8 +136,10 @@ impl WasapiCaptureImpl {
                 .map_err(|_| Error::SessionStartFailed)?;
         }
 
+        // スレッド生成成功後に running フラグを立てる
         context.running.store(true, Ordering::Release);
 
+        // キャプチャに必要なデータをクローン（Send ラッパーで包む）
         let capture_client = SendPtr(session.capture_client.clone());
         let event_handle = SendHandle(session.event_handle);
         let format = session.format;
@@ -133,6 +147,7 @@ impl WasapiCaptureImpl {
         let channels = session.channels;
         let context = Arc::clone(context);
 
+        // キャプチャスレッドを開始
         let handle = thread::Builder::new()
             .name("audio-capture".to_string())
             .spawn(move || {
@@ -161,14 +176,20 @@ impl WasapiCaptureImpl {
             && context.running.load(Ordering::Acquire)
         {
             context.running.store(false, Ordering::Release);
+
+            // イベントをシグナル状態にしてスレッドを起こす
             if let Some(session) = &self.session {
                 unsafe {
                     let _ = SetEvent(session.event_handle);
                 }
             }
+
+            // スレッドの終了を待機
             if let Some(handle) = self.capture_thread.take() {
                 let _ = handle.join();
             }
+
+            // オーディオクライアントを停止
             if let Some(session) = &self.session {
                 unsafe {
                     let _ = session.audio_client.Stop();
@@ -204,6 +225,7 @@ impl Drop for WasapiCaptureImpl {
 unsafe impl Send for WasapiCaptureImpl {}
 unsafe impl Sync for WasapiCaptureImpl {}
 
+/// キャプチャスレッド関数
 fn capture_thread_func(
     capture_client: IAudioCaptureClient,
     event_handle: HANDLE,
@@ -213,11 +235,16 @@ fn capture_thread_func(
     context: Arc<WasapiCaptureContext>,
 ) {
     unsafe {
+        // ワーカースレッドの COM 参照カウント追加。
+        // MTA はプロセス全体で共有されるため、呼び出し元で検証済みなら失敗しない。
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+
+        // タイムスタンプ用のパフォーマンスカウンタ
         let mut frequency = 0i64;
         let _ = QueryPerformanceFrequency(&mut frequency);
 
         while context.running.load(Ordering::Acquire) {
+            // イベント待機（10ms タイムアウト）
             let wait_result = WaitForSingleObject(event_handle, 10);
             if !context.running.load(Ordering::Acquire) {
                 break;
@@ -226,6 +253,7 @@ fn capture_thread_func(
                 continue;
             }
 
+            // 利用可能なパケットを処理
             loop {
                 let packet_length = match capture_client.GetNextPacketSize() {
                     Ok(len) => len,
@@ -249,6 +277,7 @@ fn capture_thread_func(
                 }
 
                 if frames_available > 0 {
+                    // タイムスタンプを取得（マイクロ秒）
                     let mut counter = 0i64;
                     let _ = QueryPerformanceCounter(&mut counter);
                     let timestamp_us = if frequency > 0 {
@@ -257,6 +286,7 @@ fn capture_thread_func(
                         0
                     };
 
+                    // データサイズを計算
                     let bytes_per_sample: usize = match format {
                         AudioFormat::S16 => 2,
                         AudioFormat::F32 => 4,
@@ -272,6 +302,7 @@ fn capture_thread_func(
                         }
                     };
 
+                    // 無音フラグまたは null ポインタの場合はスキップする
                     let is_silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
                     if is_silent || data_ptr.is_null() || data_size == 0 {
                         let _ = capture_client.ReleaseBuffer(frames_available);
