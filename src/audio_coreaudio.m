@@ -6,8 +6,8 @@
 
 #include "audio_coreaudio.h"
 
-// AudioDeviceCoreAudio 構造体
-struct AudioDeviceCoreAudio {
+// AudioDevice 構造体
+struct AudioDevice {
     char* name;
     char* unique_id;
     int channels;
@@ -15,8 +15,8 @@ struct AudioDeviceCoreAudio {
     int device_type;
 };
 
-// AudioSessionCoreAudio 構造体
-struct AudioSessionCoreAudio {
+// AudioSession 構造体
+struct AudioSession {
     AudioQueueRef queue;
     AudioQueueBufferRef buffers[3];
     AudioStreamBasicDescription format;
@@ -32,7 +32,7 @@ static void audio_input_callback(void* user_data,
                                   UInt32 num_packets,
                                   const AudioStreamPacketDescription* packet_desc
                                       __attribute__((unused))) {
-    struct AudioSessionCoreAudio* session = (struct AudioSessionCoreAudio*)user_data;
+    struct AudioSession* session = (struct AudioSession*)user_data;
 
     if (session->callback && num_packets > 0) {
         // タイムスタンプをマイクロ秒に変換
@@ -127,7 +127,7 @@ static int get_channel_count(AudioDeviceID deviceID,
 
 // デバイスを動的配列に追加するヘルパー関数
 // 成功時は 0、メモリ確保失敗時は -1 を返す
-static int add_device_to_array(struct AudioDeviceCoreAudio*** deviceArray,
+static int add_device_to_array(struct AudioDevice*** deviceArray,
                                 int* deviceCount, int* capacity,
                                 CFStringRef deviceName,
                                 CFStringRef deviceUID,
@@ -136,8 +136,8 @@ static int add_device_to_array(struct AudioDeviceCoreAudio*** deviceArray,
     // 配列を拡張
     if (*deviceCount >= *capacity) {
         int new_capacity = *capacity == 0 ? 8 : *capacity * 2;
-        struct AudioDeviceCoreAudio** newArray = (struct AudioDeviceCoreAudio**)realloc(
-            *deviceArray, sizeof(struct AudioDeviceCoreAudio*) * new_capacity);
+        struct AudioDevice** newArray = (struct AudioDevice**)realloc(
+            *deviceArray, sizeof(struct AudioDevice*) * new_capacity);
         if (!newArray) {
             return -1;
         }
@@ -145,8 +145,8 @@ static int add_device_to_array(struct AudioDeviceCoreAudio*** deviceArray,
         *capacity = new_capacity;
     }
 
-    struct AudioDeviceCoreAudio* device =
-        (struct AudioDeviceCoreAudio*)malloc(sizeof(struct AudioDeviceCoreAudio));
+    struct AudioDevice* device =
+        (struct AudioDevice*)malloc(sizeof(struct AudioDevice));
     if (!device) {
         return -1;
     }
@@ -233,7 +233,7 @@ int audio_coreaudio_enumerate_devices(struct AudioDevice*** devices, int* count)
         return -1;
     }
 
-    struct AudioDeviceCoreAudio** deviceArray = NULL;
+    struct AudioDevice** deviceArray = NULL;
     int totalDeviceCount = 0;
     int capacity = 0;
 
@@ -326,7 +326,7 @@ int audio_coreaudio_enumerate_devices(struct AudioDevice*** devices, int* count)
 
     free(deviceIDs);
 
-    *devices = (struct AudioDevice**)deviceArray;
+    *devices = deviceArray;
     *count = totalDeviceCount;
     return 0;
 }
@@ -338,10 +338,9 @@ void audio_coreaudio_free_devices(struct AudioDevice** devices, int count) {
 
     for (int i = 0; i < count; i++) {
         if (devices[i]) {
-            struct AudioDeviceCoreAudio* d = (struct AudioDeviceCoreAudio*)devices[i];
-            free(d->name);
-            free(d->unique_id);
-            free(d);
+            free(devices[i]->name);
+            free(devices[i]->unique_id);
+            free(devices[i]);
         }
     }
     free(devices);
@@ -351,40 +350,35 @@ const char* audio_coreaudio_device_name(struct AudioDevice* device) {
     if (!device) {
         return NULL;
     }
-    struct AudioDeviceCoreAudio* d = (struct AudioDeviceCoreAudio*)device;
-    return d->name;
+    return device->name;
 }
 
 const char* audio_coreaudio_device_unique_id(struct AudioDevice* device) {
     if (!device) {
         return NULL;
     }
-    struct AudioDeviceCoreAudio* d = (struct AudioDeviceCoreAudio*)device;
-    return d->unique_id;
+    return device->unique_id;
 }
 
 int audio_coreaudio_device_channels(struct AudioDevice* device) {
     if (!device) {
         return 0;
     }
-    struct AudioDeviceCoreAudio* d = (struct AudioDeviceCoreAudio*)device;
-    return d->channels;
+    return device->channels;
 }
 
 int audio_coreaudio_device_sample_rate(struct AudioDevice* device) {
     if (!device) {
         return 0;
     }
-    struct AudioDeviceCoreAudio* d = (struct AudioDeviceCoreAudio*)device;
-    return d->sample_rate;
+    return device->sample_rate;
 }
 
 int audio_coreaudio_device_type(struct AudioDevice* device) {
     if (!device) {
         return AUDIO_DEVICE_TYPE_INPUT;
     }
-    struct AudioDeviceCoreAudio* d = (struct AudioDeviceCoreAudio*)device;
-    return d->device_type;
+    return device->device_type;
 }
 
 static AudioDeviceID find_device_by_uid(const char* uid) {
@@ -444,8 +438,8 @@ static AudioDeviceID find_device_by_uid(const char* uid) {
 struct AudioSession* audio_coreaudio_session_create(const char* device_id,
                                            int sample_rate,
                                            int channels) {
-    struct AudioSessionCoreAudio* session =
-        (struct AudioSessionCoreAudio*)calloc(1, sizeof(struct AudioSessionCoreAudio));
+    struct AudioSession* session =
+        (struct AudioSession*)calloc(1, sizeof(struct AudioSession));
     if (!session) {
         return NULL;
     }
@@ -509,7 +503,7 @@ struct AudioSession* audio_coreaudio_session_create(const char* device_id,
         }
     }
 
-    return (struct AudioSession*)session;
+    return session;
 }
 
 void audio_coreaudio_session_destroy(struct AudioSession* session) {
@@ -517,14 +511,12 @@ void audio_coreaudio_session_destroy(struct AudioSession* session) {
         return;
     }
 
-    struct AudioSessionCoreAudio* s = (struct AudioSessionCoreAudio*)session;
-
-    if (atomic_load(&s->running)) {
+    if (atomic_load(&session->running)) {
         audio_coreaudio_session_stop(session);
     }
 
-    AudioQueueDispose(s->queue, true);
-    free(s);
+    AudioQueueDispose(session->queue, true);
+    free(session);
 }
 
 int audio_coreaudio_session_start(struct AudioSession* session,
@@ -534,30 +526,28 @@ int audio_coreaudio_session_start(struct AudioSession* session,
         return -1;
     }
 
-    struct AudioSessionCoreAudio* s = (struct AudioSessionCoreAudio*)session;
-
-    if (atomic_load(&s->running)) {
+    if (atomic_load(&session->running)) {
         return 0;
     }
 
-    s->callback = callback;
-    s->user_data = user_data;
-    atomic_store(&s->running, 1);
+    session->callback = callback;
+    session->user_data = user_data;
+    atomic_store(&session->running, 1);
 
     // バッファをエンキュー
     for (int i = 0; i < 3; i++) {
         OSStatus status =
-            AudioQueueEnqueueBuffer(s->queue, s->buffers[i], 0, NULL);
+            AudioQueueEnqueueBuffer(session->queue, session->buffers[i], 0, NULL);
         if (status != noErr) {
-            atomic_store(&s->running, 0);
+            atomic_store(&session->running, 0);
             return -1;
         }
     }
 
     // キャプチャを開始
-    OSStatus status = AudioQueueStart(s->queue, NULL);
+    OSStatus status = AudioQueueStart(session->queue, NULL);
     if (status != noErr) {
-        atomic_store(&s->running, 0);
+        atomic_store(&session->running, 0);
         return -1;
     }
 
@@ -569,28 +559,24 @@ void audio_coreaudio_session_stop(struct AudioSession* session) {
         return;
     }
 
-    struct AudioSessionCoreAudio* s = (struct AudioSessionCoreAudio*)session;
-
-    if (!atomic_load(&s->running)) {
+    if (!atomic_load(&session->running)) {
         return;
     }
 
-    atomic_store(&s->running, 0);
-    AudioQueueStop(s->queue, true);
+    atomic_store(&session->running, 0);
+    AudioQueueStop(session->queue, true);
 }
 
 int audio_coreaudio_session_sample_rate(struct AudioSession* session) {
     if (!session) {
         return 0;
     }
-    struct AudioSessionCoreAudio* s = (struct AudioSessionCoreAudio*)session;
-    return (int)s->format.mSampleRate;
+    return (int)session->format.mSampleRate;
 }
 
 int audio_coreaudio_session_channels(struct AudioSession* session) {
     if (!session) {
         return 0;
     }
-    struct AudioSessionCoreAudio* s = (struct AudioSessionCoreAudio*)session;
-    return s->format.mChannelsPerFrame;
+    return session->format.mChannelsPerFrame;
 }
