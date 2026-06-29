@@ -19,7 +19,7 @@ jobs:
             cargo-flags: ""
           - name: Ubuntu (pipewire)
             os: ubuntu-24.04
-            cargo-flags: "--no-default-features --features pipewire"
+            cargo-flags: "--no-default-features --features default-pipewire"
           - name: Ubuntu ARM (pulse)
             os: ubuntu-24.04-arm
             cargo-flags: ""

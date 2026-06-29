@@ -11,12 +11,12 @@ use windows::{
 };
 
 use crate::common::{AudioDeviceType, AudioFormat, AudioPlaybackConfig, PlaybackFrame};
-use crate::device_windows::{SendHandle, SendPtr, get_device_by_id};
+use crate::device_wasapi::{SendHandle, SendPtr, get_device_by_id};
 use crate::error::{Error, Result};
 
-struct PlaybackContext {
-    callback: Box<dyn Fn() -> Option<PlaybackFrame> + Send + Sync>,
-    running: AtomicBool,
+pub(crate) struct PlaybackContext {
+    pub(crate) callback: Box<dyn Fn() -> Option<PlaybackFrame> + Send + Sync>,
+    pub(crate) running: AtomicBool,
 }
 
 struct SessionData {
@@ -35,7 +35,7 @@ unsafe impl Send for SendPtr<IAudioRenderClient> {}
 unsafe impl Send for SendPtr<IAudioClient> {}
 
 /// オーディオ再生
-pub struct AudioPlayback {
+pub(crate) struct WasapiPlaybackImpl {
     session: Option<SessionData>,
     context: Option<Arc<PlaybackContext>>,
     playback_thread: Option<thread::JoinHandle<()>>,
@@ -44,8 +44,8 @@ pub struct AudioPlayback {
     actual_channels: i32,
 }
 
-impl AudioPlayback {
-    /// 新しい AudioPlayback を作成
+impl WasapiPlaybackImpl {
+    /// 新しい AudioPlayback を作成する
     ///
     /// `callback` はフレームデータを要求されたときに呼ばれる。
     /// データがない場合は `None` を返すと無音が再生される。
@@ -53,63 +53,57 @@ impl AudioPlayback {
     where
         F: Fn() -> Option<PlaybackFrame> + Send + Sync + 'static,
     {
-        crate::device_windows::init_com_mta()?;
-        unsafe {
-            // デバイスを取得（再生なので出力デバイス）
-            let device = get_device_by_id(config.device_id.as_deref(), AudioDeviceType::Output)?;
+        // デバイスを取得（再生なので出力デバイス）
+        let device = get_device_by_id(config.device_id.as_deref(), AudioDeviceType::Output)?;
 
+        unsafe {
             // オーディオクライアントを取得
             let audio_client: IAudioClient = device
                 .Activate(CLSCTX_ALL, None)
-                .map_err(|_| Error::SessionCreateFailed)?;
+                .map_err(|_| Error::DeviceAccessDenied)?;
 
             // ミックスフォーマットを取得
             let mix_format = audio_client
                 .GetMixFormat()
-                .map_err(|_| Error::SessionCreateFailed)?;
+                .map_err(|_| Error::DeviceAccessDenied)?;
+            let wave_format = &*mix_format;
 
             // フォーマット情報を取得
-            let sample_rate = (*mix_format).nSamplesPerSec as i32;
-            let channels = (*mix_format).nChannels as i32;
-            let format = crate::device_windows::determine_audio_format(mix_format);
+            let format = crate::device_wasapi::determine_audio_format(mix_format);
+
+            let sample_rate = wave_format.nSamplesPerSec as i32;
+            let channels = wave_format.nChannels as i32;
+
+            CoTaskMemFree(Some(mix_format as *const _));
+
+            // オーディオクライアントを初期化（10ms バッファ）
+            audio_client
+                .Initialize(
+                    AUDCLNT_SHAREMODE_SHARED,
+                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                    100_000, // 10ms in 100-nanosecond units
+                    0,
+                    mix_format,
+                    Some(std::ptr::null()),
+                )
+                .map_err(|_| Error::SessionCreateFailed)?;
+
+            // バッファサイズを取得
+            let buffer_frames = audio_client
+                .GetBufferSize()
+                .map_err(|_| Error::SessionCreateFailed)?;
+
+            // レンダークライアントを取得
+            let render_client: IAudioRenderClient = audio_client
+                .GetService()
+                .map_err(|_| Error::SessionCreateFailed)?;
 
             // イベントハンドルを作成
             let event_handle =
                 CreateEventW(None, false, false, None).map_err(|_| Error::SessionCreateFailed)?;
 
-            // オーディオクライアントを初期化（10ms バッファ）
-            let buffer_duration: i64 = 100_000; // 10ms in 100-nanosecond units
-            audio_client
-                .Initialize(
-                    AUDCLNT_SHAREMODE_SHARED,
-                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                    buffer_duration,
-                    0,
-                    mix_format,
-                    None,
-                )
-                .map_err(|_| {
-                    CoTaskMemFree(Some(mix_format as *const _));
-                    let _ = CloseHandle(event_handle);
-                    Error::SessionCreateFailed
-                })?;
-
-            CoTaskMemFree(Some(mix_format as *const _));
-
             // イベントハンドルを設定
             audio_client.SetEventHandle(event_handle).map_err(|_| {
-                let _ = CloseHandle(event_handle);
-                Error::SessionCreateFailed
-            })?;
-
-            // バッファサイズを取得
-            let buffer_frames = audio_client.GetBufferSize().map_err(|_| {
-                let _ = CloseHandle(event_handle);
-                Error::SessionCreateFailed
-            })?;
-
-            // レンダークライアントを取得
-            let render_client: IAudioRenderClient = audio_client.GetService().map_err(|_| {
                 let _ = CloseHandle(event_handle);
                 Error::SessionCreateFailed
             })?;
@@ -119,18 +113,16 @@ impl AudioPlayback {
                 running: AtomicBool::new(false),
             });
 
-            let session = SessionData {
-                audio_client,
-                render_client,
-                event_handle,
-                format,
-                sample_rate,
-                channels,
-                buffer_frames,
-            };
-
             Ok(Self {
-                session: Some(session),
+                session: Some(SessionData {
+                    audio_client,
+                    render_client,
+                    event_handle,
+                    format,
+                    sample_rate,
+                    channels,
+                    buffer_frames,
+                }),
                 context: Some(context),
                 playback_thread: None,
                 config,
@@ -165,11 +157,14 @@ impl AudioPlayback {
         let sample_rate = session.sample_rate;
         let channels = session.channels;
         let buffer_frames = session.buffer_frames;
-        let context_clone = Arc::clone(context);
+        let context = Arc::clone(context);
+
+        // スレッド生成前に running フラグを立てる
+        context.running.store(true, Ordering::Release);
 
         // 再生スレッドを開始
         let handle = thread::Builder::new()
-            .name("audio-playback".into())
+            .name("audio-playback".to_string())
             .spawn(move || {
                 playback_thread_func(
                     render_client.into_inner(),
@@ -179,15 +174,17 @@ impl AudioPlayback {
                     sample_rate,
                     channels,
                     buffer_frames,
-                    context_clone,
+                    context,
                 );
             })
-            .map_err(|_| Error::SessionStartFailed)?;
+            .map_err(|_| {
+                unsafe {
+                    let _ = session.audio_client.Stop();
+                }
+                Error::SessionCreateFailed
+            })?;
 
-        // スレッド生成成功後に running フラグを立てる
-        context.running.store(true, Ordering::Release);
         self.playback_thread = Some(handle);
-
         Ok(())
     }
 
@@ -235,10 +232,9 @@ impl AudioPlayback {
     }
 }
 
-impl Drop for AudioPlayback {
+impl Drop for WasapiPlaybackImpl {
     fn drop(&mut self) {
         self.stop();
-
         if let Some(session) = self.session.take() {
             unsafe {
                 let _ = CloseHandle(session.event_handle);
@@ -247,11 +243,11 @@ impl Drop for AudioPlayback {
     }
 }
 
-unsafe impl Send for AudioPlayback {}
-unsafe impl Sync for AudioPlayback {}
+unsafe impl Send for WasapiPlaybackImpl {}
+unsafe impl Sync for WasapiPlaybackImpl {}
 
 /// 再生スレッド関数
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn playback_thread_func(
     render_client: IAudioRenderClient,
     audio_client: IAudioClient,
@@ -270,11 +266,9 @@ fn playback_thread_func(
         while context.running.load(Ordering::Acquire) {
             // イベント待機（10ms タイムアウト）
             let wait_result = WaitForSingleObject(event_handle, 10);
-
             if !context.running.load(Ordering::Acquire) {
                 break;
             }
-
             if wait_result != WAIT_OBJECT_0 && wait_result != WAIT_TIMEOUT {
                 continue;
             }
@@ -284,16 +278,13 @@ fn playback_thread_func(
                 Ok(p) => p,
                 Err(_) => continue,
             };
-
             let frames_available = buffer_frames.saturating_sub(padding);
             if frames_available == 0 {
                 continue;
             }
 
             // コールバックからデータを取得
-            let frame_opt =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (context.callback)()))
-                    .unwrap_or(None);
+            let frame_opt = (context.callback)();
 
             // バッファを取得
             let data_ptr = match render_client.GetBuffer(frames_available) {
@@ -356,7 +347,6 @@ fn playback_thread_func(
                         ptr::write_bytes(data_ptr.add(copy_len), 0, buffer_size - copy_len);
                     }
                 }
-
                 let _ = render_client.ReleaseBuffer(frames_available, 0);
             } else {
                 // データがない場合は無音
@@ -364,7 +354,6 @@ fn playback_thread_func(
                     .ReleaseBuffer(frames_available, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32);
             }
         }
-
         CoUninitialize();
     }
 }
