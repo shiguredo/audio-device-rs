@@ -302,10 +302,7 @@ fn playback_thread_func(
 
         if let Some(frame) = frame_opt {
             // フレームデータをバッファに変換して書き込む
-            let bytes_per_sample: usize = match format {
-                AudioFormat::S16 => 2,
-                AudioFormat::F32 => 4,
-            };
+            let bytes_per_sample: usize = format.bytes_per_sample();
             let buffer_size = match (frames_available as usize)
                 .checked_mul(channels as usize)
                 .and_then(|n| n.checked_mul(bytes_per_sample))
