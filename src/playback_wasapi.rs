@@ -181,6 +181,7 @@ impl WasapiPlaybackImpl {
                 );
             })
             .map_err(|_| {
+                context.running.store(false, Ordering::Release);
                 unsafe {
                     let _ = session.audio_client.Stop();
                 }
