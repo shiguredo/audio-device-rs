@@ -47,12 +47,19 @@ pub(crate) struct PlaybackContext {
 // ---------------------------------------------------------------------------
 
 pub(crate) struct FfiPlaybackImpl {
+    /// バックエンド固有の FFI 関数群
     ops: &'static PlaybackOps,
+    /// C 側の再生セッション。destroy 後は None になる
     session: Option<NonNull<ffi::PlaybackSession>>,
+    /// ユーザーコールバックを保持するコンテキスト
     context: Option<Box<PlaybackContext>>,
+    /// ユーザーが指定した再生設定
     config: AudioPlaybackConfig,
+    /// C 側とネゴシエーションされた実際のサンプルレート
     actual_sample_rate: i32,
+    /// C 側とネゴシエーションされた実際のチャンネル数
     actual_channels: i32,
+    /// 再生中かどうか（C 側の running とは独立に管理）
     running: bool,
 }
 
