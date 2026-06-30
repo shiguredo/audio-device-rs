@@ -15,7 +15,7 @@ use crate::device_wasapi::{SendHandle, SendPtr, get_device_by_id};
 use crate::error::{Error, Result};
 
 pub(crate) struct PlaybackContext {
-    pub(crate) callback: Box<dyn Fn() -> Option<PlaybackFrame> + Send + Sync>,
+    pub(crate) callback: Box<dyn Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync>,
     pub(crate) running: AtomicBool,
 }
 
@@ -51,7 +51,7 @@ impl WasapiPlaybackImpl {
     /// データがない場合は `None` を返すと無音が再生される。
     pub fn new<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn() -> Option<PlaybackFrame> + Send + Sync + 'static,
+        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
     {
         // デバイスを取得（再生なので出力デバイス）
         let device = get_device_by_id(config.device_id.as_deref(), AudioDeviceType::Output)?;
@@ -253,7 +253,7 @@ fn playback_thread_func(
     audio_client: IAudioClient,
     event_handle: HANDLE,
     format: AudioFormat,
-    _sample_rate: i32,
+    sample_rate: i32,
     channels: i32,
     buffer_frames: u32,
     context: Arc<PlaybackContext>,
@@ -284,7 +284,7 @@ fn playback_thread_func(
             }
 
             // コールバックからデータを取得
-            let frame_opt = (context.callback)();
+            let frame_opt = (context.callback)(frames_available as i32, channels, sample_rate);
 
             // バッファを取得
             let data_ptr = match render_client.GetBuffer(frames_available) {

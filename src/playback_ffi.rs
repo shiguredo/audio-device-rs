@@ -37,7 +37,7 @@ struct PlaybackOps {
 // ---------------------------------------------------------------------------
 
 pub(crate) struct PlaybackContext {
-    pub callback: Box<dyn Fn() -> Option<PlaybackFrame> + Send + Sync>,
+    pub callback: Box<dyn Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync>,
 }
 
 // ---------------------------------------------------------------------------
@@ -58,7 +58,7 @@ impl FfiPlaybackImpl {
     fn new(
         ops: &'static PlaybackOps,
         config: AudioPlaybackConfig,
-        callback: impl Fn() -> Option<PlaybackFrame> + Send + Sync + 'static,
+        callback: impl Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
     ) -> Result<Self> {
         let device_id_cstr = config.device_id.as_ref().map(|s| CString::new(s.as_str()));
         let device_id_ptr = match &device_id_cstr {
@@ -94,7 +94,7 @@ impl FfiPlaybackImpl {
     #[cfg(enable_coreaudio)]
     pub(crate) fn new_coreaudio<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn() -> Option<PlaybackFrame> + Send + Sync + 'static,
+        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
     {
         Self::new(&OPS_COREAUDIO, config, callback)
     }
@@ -102,7 +102,7 @@ impl FfiPlaybackImpl {
     #[cfg(enable_pulse)]
     pub(crate) fn new_pulse<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn() -> Option<PlaybackFrame> + Send + Sync + 'static,
+        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
     {
         Self::new(&OPS_PULSE, config, callback)
     }
@@ -110,7 +110,7 @@ impl FfiPlaybackImpl {
     #[cfg(enable_pipewire)]
     pub(crate) fn new_pipewire<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn() -> Option<PlaybackFrame> + Send + Sync + 'static,
+        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
     {
         Self::new(&OPS_PIPEWIRE, config, callback)
     }
@@ -183,10 +183,10 @@ extern "C" fn playback_callback(
     buffer: *mut c_void,
     frames: i32,
     channels: i32,
-    _sample_rate: i32,
+    sample_rate: i32,
     format: i32,
 ) -> i32 {
-    if user_data.is_null() || buffer.is_null() || frames <= 0 || channels <= 0 {
+    if user_data.is_null() || buffer.is_null() || frames <= 0 || channels <= 0 || sample_rate <= 0 {
         return 0;
     }
 
@@ -208,11 +208,7 @@ extern "C" fn playback_callback(
         return 0;
     };
 
-    // ユーザーコールバックの panic は FFI 境界を越えて unwind しないようにする
-    let frame_opt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (context.callback)()))
-        .unwrap_or(None);
-
-    let Some(frame) = frame_opt else {
+    let Some(frame) = (context.callback)(frames, channels, sample_rate) else {
         return 0;
     };
 

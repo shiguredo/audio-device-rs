@@ -32,7 +32,7 @@ impl AudioPlayback {
     ))]
     pub fn new<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn() -> Option<PlaybackFrame> + Send + Sync + 'static,
+        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
     {
         #[cfg(enable_default_coreaudio)]
         {
@@ -56,7 +56,7 @@ impl AudioPlayback {
     #[cfg(enable_coreaudio)]
     pub fn new_coreaudio<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn() -> Option<PlaybackFrame> + Send + Sync + 'static,
+        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
     {
         Ok(Self(AudioPlaybackInner::Ffi(
             FfiPlaybackImpl::new_coreaudio(config, callback)?,
@@ -67,7 +67,7 @@ impl AudioPlayback {
     #[cfg(enable_pulse)]
     pub fn new_pulse<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn() -> Option<PlaybackFrame> + Send + Sync + 'static,
+        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
     {
         Ok(Self(AudioPlaybackInner::Ffi(FfiPlaybackImpl::new_pulse(
             config, callback,
@@ -78,7 +78,7 @@ impl AudioPlayback {
     #[cfg(enable_pipewire)]
     pub fn new_pipewire<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn() -> Option<PlaybackFrame> + Send + Sync + 'static,
+        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
     {
         Ok(Self(AudioPlaybackInner::Ffi(
             FfiPlaybackImpl::new_pipewire(config, callback)?,
@@ -89,7 +89,7 @@ impl AudioPlayback {
     #[cfg(enable_wasapi)]
     pub fn new_wasapi<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn() -> Option<PlaybackFrame> + Send + Sync + 'static,
+        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
     {
         Ok(Self(AudioPlaybackInner::Wasapi(WasapiPlaybackImpl::new(
             config, callback,
