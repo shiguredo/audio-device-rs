@@ -52,7 +52,7 @@ pub(crate) struct FfiPlaybackImpl {
     /// C 側の再生セッション。destroy 後は None になる
     session: Option<NonNull<ffi::PlaybackSession>>,
     /// ユーザーコールバックを保持するコンテキスト
-    context: Option<Box<PlaybackContext>>,
+    context: Box<PlaybackContext>,
     /// ユーザーが指定した再生設定
     config: AudioPlaybackConfig,
     /// C 側とネゴシエーションされた実際のサンプルレート
@@ -92,7 +92,7 @@ impl FfiPlaybackImpl {
         Ok(Self {
             ops,
             session: Some(session),
-            context: Some(context),
+            context,
             config,
             actual_sample_rate,
             actual_channels,
@@ -126,7 +126,7 @@ impl FfiPlaybackImpl {
 
     pub fn start(&mut self) -> Result<()> {
         let session = self.session.ok_or(Error::SessionStartFailed)?;
-        let context = self.context.as_mut().ok_or(Error::SessionStartFailed)?;
+        let context = &mut *self.context;
 
         if self.running {
             return Ok(());
@@ -135,7 +135,7 @@ impl FfiPlaybackImpl {
         // 再生用コールバックコンテキストのポインタを C 側に渡す。
         // FfiPlaybackImpl の生存期間中は Box<PlaybackContext> が有効であるため、
         // C 側からのコールバックは安全に参照できる。
-        let context_ptr = &mut **context as *mut PlaybackContext as *mut c_void;
+        let context_ptr = context as *mut PlaybackContext as *mut c_void;
 
         let ret = unsafe {
             (self.ops.session_start)(session.as_ptr(), Some(playback_callback), context_ptr)

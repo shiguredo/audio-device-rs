@@ -47,7 +47,7 @@ pub(crate) struct CaptureContext {
 pub(crate) struct FfiCaptureImpl {
     ops: &'static CaptureOps,
     session: Option<NonNull<ffi::AudioSession>>,
-    context: Option<Box<CaptureContext>>,
+    context: Box<CaptureContext>,
     config: AudioCaptureConfig,
     actual_sample_rate: i32,
     actual_channels: i32,
@@ -83,7 +83,7 @@ impl FfiCaptureImpl {
         Ok(Self {
             ops,
             session: Some(session),
-            context: Some(context),
+            context,
             config,
             actual_sample_rate,
             actual_channels,
@@ -117,13 +117,13 @@ impl FfiCaptureImpl {
 
     pub fn start(&mut self) -> Result<()> {
         let session = self.session.ok_or(Error::SessionStartFailed)?;
-        let context = self.context.as_mut().ok_or(Error::SessionStartFailed)?;
+        let context = &mut *self.context;
 
         if self.running {
             return Ok(());
         }
 
-        let context_ptr = &mut **context as *mut CaptureContext as *mut c_void;
+        let context_ptr = context as *mut CaptureContext as *mut c_void;
 
         let ret = unsafe {
             (self.ops.session_start)(session.as_ptr(), Some(frame_callback), context_ptr)
