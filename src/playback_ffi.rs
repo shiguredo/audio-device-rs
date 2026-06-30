@@ -39,7 +39,7 @@ struct PlaybackOps {
 // ---------------------------------------------------------------------------
 
 pub(crate) struct PlaybackContext {
-    pub callback: Box<dyn Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync>,
+    callback: Box<dyn Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync>,
 }
 
 // ---------------------------------------------------------------------------
