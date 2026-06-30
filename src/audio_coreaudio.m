@@ -444,6 +444,8 @@ struct AudioSession* audio_coreaudio_session_create(const char* device_id,
         return NULL;
     }
 
+    atomic_init(&session->running, 0);
+
     // デフォルト値の設定
     if (sample_rate <= 0) {
         sample_rate = 48000;
