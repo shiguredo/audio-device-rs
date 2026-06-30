@@ -250,3 +250,84 @@ impl Default for AudioPlaybackConfig {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// 再生用フォーマット変換共通関数
+// ---------------------------------------------------------------------------
+
+/// 再生フレームのバイトデータを、指定先フォーマットに変換してバッファに書き込む。
+///
+/// フォーマットが一致する場合はそのままコピー、異なる場合は変換する。
+/// バッファに満たない部分はゼロで埋める。
+/// 書き込んだフレーム数を返す。
+#[allow(dead_code)]
+pub(crate) fn write_playback_frame_to_buffer(
+    src_data: &[u8],
+    src_format: AudioFormat,
+    dst: &mut [u8],
+    dst_format: AudioFormat,
+    dst_channels: usize,
+) -> i32 {
+    if src_format == dst_format {
+        // 同一フォーマットの場合はそのままコピーする
+        let copy_len = src_data.len().min(dst.len());
+        let bytes_per_sample = match src_format {
+            AudioFormat::S16 => 2,
+            AudioFormat::F32 => 4,
+        };
+        let sample_size = dst_channels * bytes_per_sample;
+        let copy_frames = copy_len / sample_size;
+        let copy_bytes = copy_frames * sample_size;
+        dst[..copy_bytes].copy_from_slice(&src_data[..copy_bytes]);
+        if copy_bytes < dst.len() {
+            dst[copy_bytes..].fill(0);
+        }
+        copy_frames as i32
+    } else if src_format == AudioFormat::F32 && dst_format == AudioFormat::S16 {
+        // F32 → S16 変換
+        // Vec<u8> のアライメントは 1 なので read_unaligned / write_unaligned で読み書きする
+        let src_count = src_data.len() / 4;
+        let dst_count = dst.len() / 2;
+        let copy_len = src_count.min(dst_count);
+        let src_ptr = src_data.as_ptr() as *const f32;
+        unsafe {
+            let dst_ptr = dst.as_mut_ptr() as *mut i16;
+            for i in 0..copy_len {
+                let sample = src_ptr.add(i).read_unaligned();
+                // NaN は 0 に、±Inf は clamp で ±1 に収める
+                let clamped = if sample.is_nan() {
+                    0.0
+                } else {
+                    sample.clamp(-1.0, 1.0)
+                };
+                dst_ptr.add(i).write_unaligned((clamped * 32767.0) as i16);
+            }
+            let written_bytes = copy_len * 2;
+            if written_bytes < dst.len() {
+                dst[written_bytes..].fill(0);
+            }
+        }
+        (copy_len as i32) / dst_channels as i32
+    } else if src_format == AudioFormat::S16 && dst_format == AudioFormat::F32 {
+        // S16 → F32 変換
+        // Vec<u8> のアライメントは 1 なので read_unaligned / write_unaligned で読み書きする
+        let src_count = src_data.len() / 2;
+        let dst_count = dst.len() / 4;
+        let copy_len = src_count.min(dst_count);
+        let src_ptr = src_data.as_ptr() as *const i16;
+        unsafe {
+            let dst_ptr = dst.as_mut_ptr() as *mut f32;
+            for i in 0..copy_len {
+                let sample = src_ptr.add(i).read_unaligned();
+                dst_ptr.add(i).write_unaligned(sample as f32 / 32768.0);
+            }
+            let written_bytes = copy_len * 4;
+            if written_bytes < dst.len() {
+                dst[written_bytes..].fill(0);
+            }
+        }
+        (copy_len as i32) / dst_channels as i32
+    } else {
+        0
+    }
+}
