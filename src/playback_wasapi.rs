@@ -160,7 +160,6 @@ impl WasapiPlaybackImpl {
         let sample_rate = session.sample_rate;
         let channels = session.channels;
         let buffer_frames = session.buffer_frames;
-        let context = Arc::clone(context);
 
         // スレッド生成前に running フラグを立てる
         context.running.store(true, Ordering::Release);
