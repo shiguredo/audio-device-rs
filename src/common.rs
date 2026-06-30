@@ -26,9 +26,11 @@ pub enum AudioFormat {
 #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
 impl AudioDeviceType {
     pub(crate) fn from_ffi(device_type: i32) -> Result<Self> {
+        const OUTPUT: i32 = ffi::AUDIO_DEVICE_TYPE_OUTPUT as i32;
+        const INPUT: i32 = ffi::AUDIO_DEVICE_TYPE_INPUT as i32;
         match device_type {
-            x if x == ffi::AUDIO_DEVICE_TYPE_OUTPUT as i32 => Ok(AudioDeviceType::Output),
-            x if x == ffi::AUDIO_DEVICE_TYPE_INPUT as i32 => Ok(AudioDeviceType::Input),
+            OUTPUT => Ok(AudioDeviceType::Output),
+            INPUT => Ok(AudioDeviceType::Input),
             other => Err(Error::UnknownDeviceType(other)),
         }
     }
@@ -47,9 +49,11 @@ impl AudioFormat {
 #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
 impl AudioFormat {
     pub(crate) fn from_ffi(format: i32) -> Result<Self> {
+        const F32: i32 = ffi::AUDIO_FORMAT_F32 as i32;
+        const S16: i32 = ffi::AUDIO_FORMAT_S16 as i32;
         match format {
-            x if x == ffi::AUDIO_FORMAT_F32 as i32 => Ok(AudioFormat::F32),
-            x if x == ffi::AUDIO_FORMAT_S16 as i32 => Ok(AudioFormat::S16),
+            F32 => Ok(AudioFormat::F32),
+            S16 => Ok(AudioFormat::S16),
             other => Err(Error::UnknownFormat(other)),
         }
     }
