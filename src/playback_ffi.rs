@@ -18,20 +18,20 @@ use crate::ffi;
 
 /// バックエンド固有の FFI 関数テーブル。
 struct PlaybackOps {
-    pub session_create: unsafe extern "C" fn(
+    session_create: unsafe extern "C" fn(
         device_id: *const c_char,
         sample_rate: i32,
         channels: i32,
     ) -> *mut ffi::PlaybackSession,
-    pub session_start: unsafe extern "C" fn(
+    session_start: unsafe extern "C" fn(
         session: *mut ffi::PlaybackSession,
         callback: ffi::AudioPlaybackCallback,
         context: *mut c_void,
     ) -> i32,
-    pub session_stop: unsafe extern "C" fn(session: *mut ffi::PlaybackSession),
-    pub session_destroy: unsafe extern "C" fn(session: *mut ffi::PlaybackSession),
-    pub session_sample_rate: unsafe extern "C" fn(session: *mut ffi::PlaybackSession) -> i32,
-    pub session_channels: unsafe extern "C" fn(session: *mut ffi::PlaybackSession) -> i32,
+    session_stop: unsafe extern "C" fn(session: *mut ffi::PlaybackSession),
+    session_destroy: unsafe extern "C" fn(session: *mut ffi::PlaybackSession),
+    session_sample_rate: unsafe extern "C" fn(session: *mut ffi::PlaybackSession) -> i32,
+    session_channels: unsafe extern "C" fn(session: *mut ffi::PlaybackSession) -> i32,
 }
 
 // ---------------------------------------------------------------------------
