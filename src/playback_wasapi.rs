@@ -76,19 +76,20 @@ impl WasapiPlaybackImpl {
             let sample_rate = wave_format.nSamplesPerSec as i32;
             let channels = wave_format.nChannels as i32;
 
+            // オーディオクライアントを初期化（10ms バッファ）
+            let init_result = audio_client.Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                100_000, // 100 ナノ秒単位で 10ms を指定する
+                0,
+                mix_format,
+                Some(std::ptr::null()),
+            );
+
+            // Initialize の成否にかかわらず mix_format を解放する
             CoTaskMemFree(Some(mix_format as *const _));
 
-            // オーディオクライアントを初期化（10ms バッファ）
-            audio_client
-                .Initialize(
-                    AUDCLNT_SHAREMODE_SHARED,
-                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                    100_000, // 10ms in 100-nanosecond units
-                    0,
-                    mix_format,
-                    Some(std::ptr::null()),
-                )
-                .map_err(|_| Error::SessionCreateFailed)?;
+            init_result.map_err(|_| Error::SessionCreateFailed)?;
 
             // バッファサイズを取得
             let buffer_frames = audio_client
