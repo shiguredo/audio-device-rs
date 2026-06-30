@@ -247,7 +247,6 @@ impl Drop for WasapiPlaybackImpl {
 }
 
 unsafe impl Send for WasapiPlaybackImpl {}
-unsafe impl Sync for WasapiPlaybackImpl {}
 
 /// 再生スレッド関数
 #[expect(clippy::too_many_arguments)]
