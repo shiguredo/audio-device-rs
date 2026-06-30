@@ -16,20 +16,20 @@ use crate::ffi;
 
 /// バックエンド固有の FFI 関数テーブル。
 struct CaptureOps {
-    pub session_create: unsafe extern "C" fn(
+    session_create: unsafe extern "C" fn(
         device_id: *const c_char,
         sample_rate: i32,
         channels: i32,
     ) -> *mut ffi::AudioSession,
-    pub session_start: unsafe extern "C" fn(
+    session_start: unsafe extern "C" fn(
         session: *mut ffi::AudioSession,
         callback: ffi::AudioFrameCallback,
         context: *mut c_void,
     ) -> i32,
-    pub session_stop: unsafe extern "C" fn(session: *mut ffi::AudioSession),
-    pub session_destroy: unsafe extern "C" fn(session: *mut ffi::AudioSession),
-    pub session_sample_rate: unsafe extern "C" fn(session: *mut ffi::AudioSession) -> i32,
-    pub session_channels: unsafe extern "C" fn(session: *mut ffi::AudioSession) -> i32,
+    session_stop: unsafe extern "C" fn(session: *mut ffi::AudioSession),
+    session_destroy: unsafe extern "C" fn(session: *mut ffi::AudioSession),
+    session_sample_rate: unsafe extern "C" fn(session: *mut ffi::AudioSession) -> i32,
+    session_channels: unsafe extern "C" fn(session: *mut ffi::AudioSession) -> i32,
 }
 
 // ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ struct CaptureOps {
 // ---------------------------------------------------------------------------
 
 pub(crate) struct CaptureContext {
-    pub callback: Box<dyn Fn(AudioFrame<'_>) + Send + Sync>,
+    callback: Box<dyn Fn(AudioFrame<'_>) + Send + Sync>,
 }
 
 // ---------------------------------------------------------------------------
@@ -114,9 +114,7 @@ impl FfiCaptureImpl {
     {
         Self::new(&OPS_PIPEWIRE, config, callback)
     }
-}
 
-impl FfiCaptureImpl {
     pub fn start(&mut self) -> Result<()> {
         let session = self.session.ok_or(Error::SessionStartFailed)?;
         let context = self.context.as_mut().ok_or(Error::SessionStartFailed)?;
