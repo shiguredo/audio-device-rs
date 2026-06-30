@@ -264,73 +264,82 @@ fn playback_thread_func(
     buffer_frames: u32,
     context: Arc<PlaybackContext>,
 ) {
+    // COM を MTA で初期化する。
+    // 呼び出し元で検証済みなら失敗しない。
     unsafe {
-        // COM を MTA で初期化する。
-        // 呼び出し元で検証済みなら失敗しない。
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    }
 
-        // running フラグが false になるまでループする
-        while context.running.load(Ordering::Acquire) {
-            // バッファに空きができるまでイベントを待機する
-            let wait_result = WaitForSingleObject(event_handle, 10);
-            if !context.running.load(Ordering::Acquire) {
-                break;
-            }
-            if wait_result != WAIT_OBJECT_0 && wait_result != WAIT_TIMEOUT {
-                continue;
-            }
+    // running フラグが false になるまでループする
+    while context.running.load(Ordering::Acquire) {
+        // バッファに空きができるまでイベントを待機する
+        let wait_result = unsafe { WaitForSingleObject(event_handle, 10) };
+        if !context.running.load(Ordering::Acquire) {
+            break;
+        }
+        if wait_result != WAIT_OBJECT_0 && wait_result != WAIT_TIMEOUT {
+            continue;
+        }
 
-            // バッファの空きフレーム数を計算する
-            let padding = match audio_client.GetCurrentPadding() {
-                Ok(p) => p,
-                Err(_) => continue,
+        // バッファの空きフレーム数を計算する
+        let padding = match unsafe { audio_client.GetCurrentPadding() } {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let frames_available = buffer_frames.saturating_sub(padding);
+        if frames_available == 0 {
+            continue;
+        }
+
+        // ユーザーコールバックからフレームデータを取得する
+        let frame_opt = (context.callback)(frames_available as i32, channels, sample_rate);
+
+        // レンダリングバッファを取得する
+        let data_ptr = match unsafe { render_client.GetBuffer(frames_available) } {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        if let Some(frame) = frame_opt {
+            // フレームデータをバッファに変換して書き込む
+            let bytes_per_sample: usize = match format {
+                AudioFormat::S16 => 2,
+                AudioFormat::F32 => 4,
             };
-            let frames_available = buffer_frames.saturating_sub(padding);
-            if frames_available == 0 {
-                continue;
-            }
-
-            // ユーザーコールバックからフレームデータを取得する
-            let frame_opt = (context.callback)(frames_available as i32, channels, sample_rate);
-
-            // レンダリングバッファを取得する
-            let data_ptr = match render_client.GetBuffer(frames_available) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-
-            if let Some(frame) = frame_opt {
-                // フレームデータをバッファに変換して書き込む
-                let bytes_per_sample: usize = match format {
-                    AudioFormat::S16 => 2,
-                    AudioFormat::F32 => 4,
-                };
-                let buffer_size = match (frames_available as usize)
-                    .checked_mul(channels as usize)
-                    .and_then(|n| n.checked_mul(bytes_per_sample))
-                {
-                    Some(size) => size,
-                    None => {
+            let buffer_size = match (frames_available as usize)
+                .checked_mul(channels as usize)
+                .and_then(|n| n.checked_mul(bytes_per_sample))
+            {
+                Some(size) => size,
+                None => {
+                    unsafe {
                         let _ = render_client.ReleaseBuffer(frames_available, 0);
-                        continue;
                     }
-                };
+                    continue;
+                }
+            };
 
-                let dst = std::slice::from_raw_parts_mut(data_ptr, buffer_size);
-                write_playback_frame_to_buffer(
-                    &frame.data,
-                    frame.format,
-                    dst,
-                    format,
-                    channels as usize,
-                );
+            let dst = unsafe { std::slice::from_raw_parts_mut(data_ptr, buffer_size) };
+            write_playback_frame_to_buffer(
+                &frame.data,
+                frame.format,
+                dst,
+                format,
+                channels as usize,
+            );
+            unsafe {
                 let _ = render_client.ReleaseBuffer(frames_available, 0);
-            } else {
-                // データがない場合は無音で埋める
+            }
+        } else {
+            // データがない場合は無音で埋める
+            unsafe {
                 let _ = render_client
                     .ReleaseBuffer(frames_available, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32);
             }
         }
+    }
+
+    unsafe {
         CoUninitialize();
     }
 }
