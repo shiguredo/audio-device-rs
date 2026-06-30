@@ -165,7 +165,7 @@ impl WasapiPlaybackImpl {
         context.running.store(true, Ordering::Release);
 
         // スレッドに渡すための context クローン
-        let thread_context = Arc::clone(&context);
+        let thread_context = Arc::clone(context);
 
         // 再生スレッドを開始
         let handle = thread::Builder::new()
