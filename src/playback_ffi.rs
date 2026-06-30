@@ -195,12 +195,14 @@ extern "C" fn playback_callback(
     sample_rate: i32,
     format: i32,
 ) -> i32 {
+    // 引数の妥当性を検証する
     if user_data.is_null() || buffer.is_null() || frames <= 0 || channels <= 0 || sample_rate <= 0 {
         return 0;
     }
 
     let context = unsafe { &*(user_data as *const PlaybackContext) };
 
+    // C 側から渡されたフォーマット定数を Rust 側の型に変換する
     let audio_format = match AudioFormat::from_ffi(format) {
         Ok(f) => f,
         Err(_) => return 0,
@@ -210,6 +212,7 @@ extern "C" fn playback_callback(
         AudioFormat::F32 => 4,
     };
 
+    // バッファサイズを安全に計算する
     let Some(buffer_size) = (frames as usize)
         .checked_mul(channels as usize)
         .and_then(|n| n.checked_mul(bytes_per_sample))
@@ -217,10 +220,12 @@ extern "C" fn playback_callback(
         return 0;
     };
 
+    // ユーザーコールバックからフレームデータを取得する
     let Some(frame) = (context.callback)(frames, channels, sample_rate) else {
         return 0;
     };
 
+    // フレームデータをバッファに変換して書き込む
     let dst = unsafe { std::slice::from_raw_parts_mut(buffer as *mut u8, buffer_size) };
     write_playback_frame_to_buffer(
         &frame.data,
