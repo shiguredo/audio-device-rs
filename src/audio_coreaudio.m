@@ -475,17 +475,30 @@ struct AudioSession* audio_coreaudio_session_create(const char* device_id,
     }
 
     // デバイスを設定
+    // デバイス ID が指定された場合は、該当デバイスが存在しなければエラーにする。
+    // デバイスの検出に失敗した場合も同様にエラーにする。
     if (device_id) {
         AudioDeviceID deviceID = find_device_by_uid(device_id);
-        if (deviceID != kAudioObjectUnknown) {
-            CFStringRef deviceUID =
-                CFStringCreateWithCString(NULL, device_id, kCFStringEncodingUTF8);
-            if (deviceUID) {
-                AudioQueueSetProperty(session->queue,
-                                       kAudioQueueProperty_CurrentDevice,
-                                       &deviceUID, sizeof(CFStringRef));
-                CFRelease(deviceUID);
-            }
+        if (deviceID == kAudioObjectUnknown) {
+            AudioQueueDispose(session->queue, true);
+            free(session);
+            return NULL;
+        }
+        CFStringRef deviceUID =
+            CFStringCreateWithCString(NULL, device_id, kCFStringEncodingUTF8);
+        if (!deviceUID) {
+            AudioQueueDispose(session->queue, true);
+            free(session);
+            return NULL;
+        }
+        OSStatus setStatus = AudioQueueSetProperty(session->queue,
+                                   kAudioQueueProperty_CurrentDevice,
+                                   &deviceUID, sizeof(CFStringRef));
+        CFRelease(deviceUID);
+        if (setStatus != noErr) {
+            AudioQueueDispose(session->queue, true);
+            free(session);
+            return NULL;
         }
     }
 
