@@ -188,6 +188,7 @@ impl Default for AudioCaptureConfig {
 }
 
 /// 再生用オーディオフレームデータ
+#[derive(Debug, Clone)]
 pub struct PlaybackFrame {
     /// PCM データ
     pub data: Vec<u8>,
