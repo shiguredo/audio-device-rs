@@ -27,6 +27,14 @@ void audio_pipewire_session_stop(struct AudioSession* session);
 int audio_pipewire_session_sample_rate(struct AudioSession* session);
 int audio_pipewire_session_channels(struct AudioSession* session);
 
+// 再生セッション管理
+struct PlaybackSession* audio_pipewire_playback_session_create(const char* device_id, int sample_rate, int channels);
+void audio_pipewire_playback_session_destroy(struct PlaybackSession* session);
+int audio_pipewire_playback_session_start(struct PlaybackSession* session, AudioPlaybackCallback callback, void* user_data);
+void audio_pipewire_playback_session_stop(struct PlaybackSession* session);
+int audio_pipewire_playback_session_sample_rate(struct PlaybackSession* session);
+int audio_pipewire_playback_session_channels(struct PlaybackSession* session);
+
 #if defined(__cplusplus)
 }
 #endif
