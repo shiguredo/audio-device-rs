@@ -661,14 +661,9 @@ static void playback_on_process(void* userdata) {
 
         if (written <= 0) {
             memset(data, 0, frames * frame_size);
-            spa_buf->datas[0].chunk->size = frames * frame_size;
-        } else if (written < frames) {
-            int written_bytes = written * frame_size;
-            memset((uint8_t*)data + written_bytes, 0, (frames - written) * frame_size);
-            spa_buf->datas[0].chunk->size = frames * frame_size;
-        } else {
-            spa_buf->datas[0].chunk->size = frames * frame_size;
         }
+        // written > 0 の場合は Rust 側の共通変換関数がバッファ末尾をゼロ埋めしている
+        spa_buf->datas[0].chunk->size = frames * frame_size;
     } else {
         memset(data, 0, frames * frame_size);
         spa_buf->datas[0].chunk->size = frames * frame_size;

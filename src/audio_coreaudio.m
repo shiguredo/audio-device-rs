@@ -637,12 +637,8 @@ static void audio_output_callback(void* user_data,
     if (written <= 0) {
         // コールバックがデータを返さなかった場合は無音で埋める
         memset(buffer->mAudioData, 0, buffer->mAudioDataByteSize);
-    } else if (written < frames) {
-        // 残りを無音で埋める
-        int written_bytes = written * bytes_per_frame;
-        int remaining_bytes = (int)buffer->mAudioDataByteSize - written_bytes;
-        memset((uint8_t*)buffer->mAudioData + written_bytes, 0, remaining_bytes);
     }
+    // written > 0 の場合は Rust 側の共通変換関数がバッファ末尾をゼロ埋めしている
 
     AudioQueueEnqueueBuffer(queue, buffer, 0, NULL);
 }
