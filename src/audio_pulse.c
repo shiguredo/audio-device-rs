@@ -1,4 +1,4 @@
-// PulseAudio を使った Linux 用オーディオキャプチャ実装
+// PulseAudio を使った Linux 用オーディオキャプチャ・再生実装
 
 #include <stdatomic.h>
 #include <stdio.h>
