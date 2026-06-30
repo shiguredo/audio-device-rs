@@ -751,8 +751,6 @@ void audio_pulse_playback_session_destroy(struct PlaybackSession* session) {
     }
 
     if (session->mainloop) {
-        // 未起動でも安全（no-op）。起動済みの場合は確実に止める
-        pa_threaded_mainloop_stop(session->mainloop);
         pa_threaded_mainloop_free(session->mainloop);
     }
 
