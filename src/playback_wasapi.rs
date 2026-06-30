@@ -185,7 +185,7 @@ impl WasapiPlaybackImpl {
                 unsafe {
                     let _ = session.audio_client.Stop();
                 }
-                Error::SessionCreateFailed
+                Error::SessionStartFailed
             })?;
 
         self.playback_thread = Some(handle);
