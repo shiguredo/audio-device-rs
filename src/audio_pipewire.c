@@ -654,6 +654,11 @@ static void playback_on_process(void* userdata) {
                                          session->channels, session->sample_rate,
                                          AUDIO_FORMAT_S16);
 
+        // コールバックが要求フレーム数を超える値を返した場合はクランプする
+        if (written > frames) {
+            written = frames;
+        }
+
         if (written <= 0) {
             memset(data, 0, frames * frame_size);
             spa_buf->datas[0].chunk->size = frames * frame_size;
