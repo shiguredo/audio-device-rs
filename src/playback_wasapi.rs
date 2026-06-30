@@ -262,12 +262,13 @@ fn playback_thread_func(
     context: Arc<PlaybackContext>,
 ) {
     unsafe {
-        // ワーカースレッドの COM 参照カウント追加。
-        // MTA はプロセス全体で共有されるため、呼び出し元で検証済みなら失敗しない。
+        // COM を MTA で初期化する。
+        // 呼び出し元で検証済みなら失敗しない。
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
 
+        // running フラグが false になるまでループする
         while context.running.load(Ordering::Acquire) {
-            // イベント待機（10ms タイムアウト）
+            // バッファに空きができるまでイベントを待機する
             let wait_result = WaitForSingleObject(event_handle, 10);
             if !context.running.load(Ordering::Acquire) {
                 break;
@@ -276,7 +277,7 @@ fn playback_thread_func(
                 continue;
             }
 
-            // バッファの空き状況を確認
+            // バッファの空きフレーム数を計算する
             let padding = match audio_client.GetCurrentPadding() {
                 Ok(p) => p,
                 Err(_) => continue,
@@ -286,17 +287,17 @@ fn playback_thread_func(
                 continue;
             }
 
-            // コールバックからデータを取得
+            // ユーザーコールバックからフレームデータを取得する
             let frame_opt = (context.callback)(frames_available as i32, channels, sample_rate);
 
-            // バッファを取得
+            // レンダリングバッファを取得する
             let data_ptr = match render_client.GetBuffer(frames_available) {
                 Ok(p) => p,
                 Err(_) => continue,
             };
 
             if let Some(frame) = frame_opt {
-                // フレームデータをバッファにコピー
+                // フレームデータをバッファに変換して書き込む
                 let bytes_per_sample: usize = match format {
                     AudioFormat::S16 => 2,
                     AudioFormat::F32 => 4,
@@ -322,7 +323,7 @@ fn playback_thread_func(
                 );
                 let _ = render_client.ReleaseBuffer(frames_available, 0);
             } else {
-                // データがない場合は無音
+                // データがない場合は無音で埋める
                 let _ = render_client
                     .ReleaseBuffer(frames_available, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32);
             }
