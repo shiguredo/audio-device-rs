@@ -15,3 +15,11 @@ cargo run --example device_list
 ```bash
 cargo run --example device_info
 ```
+
+## playback_sine
+
+デフォルト出力デバイスに 440Hz のサイン波を再生する。
+
+```bash
+cargo run --example playback_sine
+```

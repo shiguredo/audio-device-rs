@@ -13,6 +13,8 @@
 
 - [CHANGE] AudioDevice, AudioDeviceList, AudioCapture, AudioPlayback を enum newtype 化し pulse と pipewire を共存可能にする
   - @melpon
+- [ADD] macOS / Linux に音声再生機能を追加する
+  - @melpon
 - [FIX] C コード内の strdup 戻り値 NULL チェック欠落を修正する
   - @melpon
 - [FIX] from_ffi() が未知の FFI 定数値を無条件に Input/S16 へ丸め込む問題を修正する

@@ -170,6 +170,8 @@ fn generate_bindings(builder: Builder, out_file: &str, out_dir: &Path) {
         .allowlist_type("AudioDevice")
         .allowlist_type("AudioSession")
         .allowlist_type("AudioFrameCallback")
+        .allowlist_type("PlaybackSession")
+        .allowlist_type("AudioPlaybackCallback")
         .allowlist_var("AUDIO_FORMAT_.*")
         .allowlist_var("AUDIO_DEVICE_TYPE_.*")
         .derive_default(true)
