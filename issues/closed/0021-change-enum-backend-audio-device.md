@@ -1,6 +1,7 @@
 # AudioDevice, AudioDeviceList, AudioCapture, AudioPlayback を enum newtype 化し、pulse と pipewire を共存可能にする
 
 Created: 2026-06-23
+Completed: 2026-07-01
 Model: deepseek v4-pro
 Polished: 2026-06-23
 
@@ -732,4 +733,15 @@ cargo llvm-cov report
 
 ## 解決方法
 
-（実装後に追記）
+- `AudioDevice`, `AudioDeviceList`, `AudioCapture`, `AudioPlayback` の 4 型を enum newtype に変更し、内部に FFI バックエンドと WASAPI バックエンドの具象型を保持する形にした
+- `src/device.rs`, `src/capture.rs`, `src/playback.rs` を enum 委譲パターンで書き換えた
+- FFI バックエンド（CoreAudio / PulseAudio / PipeWire）の共通実装を `src/device_ffi.rs`, `src/capture_ffi.rs`, `src/playback_ffi.rs` に抽出し、Ops テーブルパターンでバックエンド間の差異を吸収した
+- WASAPI 実装を `src/device_wasapi.rs`, `src/capture_wasapi.rs`, `src/playback_wasapi.rs` に移行した
+- `src/ffi.rs` を改修し、バックエンド別の bindgen 出力を条件付きで include する形に変更した
+- `build.rs` から pulse と pipewire の相互排他 panic を削除し、両 feature の同時有効化を可能にした
+- C コード側のシンボル名をバックエンド接頭辞付き（`audio_coreaudio_*` / `audio_pulse_*` / `audio_pipewire_*`）に変更し、リンク時のシンボル衝突を解消した
+- `src/audio.h` を共通ヘッダとして新設し、`src/audio_c.h` を廃止して `audio_coreaudio.h` / `audio_pulse.h` / `audio_pipewire.h` に分割した
+- `Cargo.toml` の feature flag を `ca` → `coreaudio` にリネームし、`wasapi` feature を追加、`windows` crate を optional 依存に変更した
+- `Error::ComInitFailed` の `#[cfg]` 属性を削除し、常に存在するバリアントに変更した（PBT の cfg 分岐も撤廃）
+- `CaptureContext` を `src/common.rs` から `src/capture_ffi.rs` に移動した
+- CHANGES.md にエントリを追記した
