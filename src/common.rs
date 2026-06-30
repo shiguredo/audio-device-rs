@@ -260,7 +260,6 @@ impl Default for AudioPlaybackConfig {
 /// フォーマットが一致する場合はそのままコピー、異なる場合は変換する。
 /// バッファに満たない部分はゼロで埋める。
 /// 書き込んだフレーム数を返す。
-#[allow(dead_code)]
 pub(crate) fn write_playback_frame_to_buffer(
     src_data: &[u8],
     src_format: AudioFormat,

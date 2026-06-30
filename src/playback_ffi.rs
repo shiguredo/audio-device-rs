@@ -6,7 +6,9 @@
 use std::ffi::{CString, c_char, c_void};
 use std::ptr::NonNull;
 
-use crate::common::{AudioFormat, AudioPlaybackConfig, PlaybackFrame};
+use crate::common::{
+    AudioFormat, AudioPlaybackConfig, PlaybackFrame, write_playback_frame_to_buffer,
+};
 use crate::error::{Error, Result};
 use crate::ffi;
 
@@ -212,62 +214,14 @@ extern "C" fn playback_callback(
         return 0;
     };
 
-    let dst = buffer as *mut u8;
-
-    if frame.format == audio_format {
-        let copy_len = frame.data.len().min(buffer_size);
-        let sample_size = channels as usize * bytes_per_sample;
-        let copy_frames = copy_len / sample_size;
-        let copy_bytes = copy_frames * sample_size;
-        unsafe {
-            std::ptr::copy_nonoverlapping(frame.data.as_ptr(), dst, copy_bytes);
-            if copy_bytes < buffer_size {
-                std::ptr::write_bytes(dst.add(copy_bytes), 0, buffer_size - copy_bytes);
-            }
-        }
-        copy_frames as i32
-    } else if frame.format == AudioFormat::F32 && audio_format == AudioFormat::S16 {
-        // F32 -> S16 変換
-        // Vec<u8> のアライメントは 1 なので read_unaligned で読み取る
-        let src_count = frame.data.len() / 4;
-        let dst_count = buffer_size / 2;
-        let copy_len = src_count.min(dst_count);
-        let src_ptr = frame.data.as_ptr() as *const f32;
-        unsafe {
-            for i in 0..copy_len {
-                let sample = src_ptr.add(i).read_unaligned();
-                let clamped = if sample.is_nan() {
-                    0.0
-                } else {
-                    sample.clamp(-1.0, 1.0)
-                };
-                (dst as *mut i16)
-                    .add(i)
-                    .write_unaligned((clamped * 32767.0) as i16);
-            }
-            std::ptr::write_bytes((dst as *mut i16).add(copy_len), 0, dst_count - copy_len);
-        }
-        (copy_len as i32) / channels
-    } else if frame.format == AudioFormat::S16 && audio_format == AudioFormat::F32 {
-        // S16 -> F32 変換
-        // Vec<u8> のアライメントは 1 なので read_unaligned で読み取る
-        let src_count = frame.data.len() / 2;
-        let dst_count = buffer_size / 4;
-        let copy_len = src_count.min(dst_count);
-        let src_ptr = frame.data.as_ptr() as *const i16;
-        unsafe {
-            for i in 0..copy_len {
-                let sample = src_ptr.add(i).read_unaligned();
-                (dst as *mut f32)
-                    .add(i)
-                    .write_unaligned(sample as f32 / 32768.0);
-            }
-            std::ptr::write_bytes((dst as *mut f32).add(copy_len), 0, dst_count - copy_len);
-        }
-        (copy_len as i32) / channels
-    } else {
-        0
-    }
+    let dst = unsafe { std::slice::from_raw_parts_mut(buffer as *mut u8, buffer_size) };
+    write_playback_frame_to_buffer(
+        &frame.data,
+        frame.format,
+        dst,
+        audio_format,
+        channels as usize,
+    )
 }
 
 // ---------------------------------------------------------------------------
