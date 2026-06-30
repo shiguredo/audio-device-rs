@@ -600,3 +600,357 @@ int audio_pipewire_session_channels(struct AudioSession* session) {
     }
     return session->channels;
 }
+
+// --- 再生 (Playback) 実装 ---
+
+struct PlaybackSession {
+    struct pw_thread_loop* thread_loop;
+    struct pw_context* context;
+    struct pw_core* core;
+    struct pw_stream* stream;
+    struct spa_hook core_listener;
+    struct spa_hook stream_listener;
+    char* device_id;
+    AudioPlaybackCallback callback;
+    void* user_data;
+    int sample_rate;
+    int channels;
+    atomic_int running;
+};
+
+// 再生ストリームの process コールバック
+static void playback_on_process(void* userdata) {
+    struct PlaybackSession* session = userdata;
+
+    struct pw_buffer* buf = pw_stream_dequeue_buffer(session->stream);
+    if (!buf) {
+        return;
+    }
+
+    if (!atomic_load(&session->running)) {
+        pw_stream_queue_buffer(session->stream, buf);
+        return;
+    }
+
+    struct spa_buffer* spa_buf = buf->buffer;
+    if (spa_buf->n_datas < 1 || !spa_buf->datas[0].data || !spa_buf->datas[0].chunk) {
+        pw_stream_queue_buffer(session->stream, buf);
+        return;
+    }
+
+    void* data = spa_buf->datas[0].data;
+    uint32_t max_size = spa_buf->datas[0].maxsize;
+
+    int bytes_per_sample = 2;  // S16
+    int frame_size = bytes_per_sample * session->channels;
+    int frames = (int)(max_size / frame_size);
+
+    if (frames > 0 && session->callback) {
+        int written = session->callback(session->user_data, data, frames,
+                                         session->channels, session->sample_rate,
+                                         AUDIO_FORMAT_S16);
+
+        if (written <= 0) {
+            memset(data, 0, frames * frame_size);
+            spa_buf->datas[0].chunk->size = frames * frame_size;
+        } else if (written < frames) {
+            int written_bytes = written * frame_size;
+            memset((uint8_t*)data + written_bytes, 0, (frames - written) * frame_size);
+            spa_buf->datas[0].chunk->size = frames * frame_size;
+        } else {
+            spa_buf->datas[0].chunk->size = frames * frame_size;
+        }
+    } else {
+        memset(data, 0, frames * frame_size);
+        spa_buf->datas[0].chunk->size = frames * frame_size;
+    }
+
+    spa_buf->datas[0].chunk->offset = 0;
+    spa_buf->datas[0].chunk->stride = frame_size;
+
+    pw_stream_queue_buffer(session->stream, buf);
+}
+
+// 再生ストリーム状態変更コールバック
+static void playback_on_stream_state_changed(void* userdata,
+                                              enum pw_stream_state old,
+                                              enum pw_stream_state state,
+                                              const char* error) {
+    (void)old;
+    (void)error;
+
+    struct PlaybackSession* session = userdata;
+
+    switch (state) {
+        case PW_STREAM_STATE_STREAMING:
+        case PW_STREAM_STATE_ERROR:
+        case PW_STREAM_STATE_UNCONNECTED:
+            pw_thread_loop_signal(session->thread_loop, false);
+            break;
+        default:
+            break;
+    }
+}
+
+static const struct pw_stream_events playback_stream_events = {
+    PW_VERSION_STREAM_EVENTS,
+    .process = playback_on_process,
+    .state_changed = playback_on_stream_state_changed,
+};
+
+// 再生用 core done イベント
+// ストリーム状態変化 (playback_on_stream_state_changed) でシグナルを送るため、ここでは不要
+static void playback_core_done(void* data, uint32_t id, int seq) {
+    (void)data;
+    (void)id;
+    (void)seq;
+}
+
+// 再生用 core error イベント
+static void playback_core_error(void* data, uint32_t id, int seq, int res,
+                                 const char* message) {
+    (void)id;
+    (void)seq;
+    (void)res;
+    (void)message;
+    struct PlaybackSession* session = data;
+    pw_thread_loop_signal(session->thread_loop, false);
+}
+
+static const struct pw_core_events playback_core_events = {
+    PW_VERSION_CORE_EVENTS,
+    .done = playback_core_done,
+    .error = playback_core_error,
+};
+
+struct PlaybackSession* audio_pipewire_playback_session_create(const char* device_id,
+                                                               int sample_rate,
+                                                               int channels) {
+    struct PlaybackSession* session = calloc(1, sizeof(struct PlaybackSession));
+    if (!session) {
+        return NULL;
+    }
+
+    pw_init(NULL, NULL);
+
+    // デフォルト値の設定
+    if (sample_rate <= 0) {
+        sample_rate = 48000;
+    }
+    if (channels <= 0) {
+        channels = 2;
+    }
+
+    session->sample_rate = sample_rate;
+    session->channels = channels;
+    session->device_id = device_id ? strdup(device_id) : NULL;
+    atomic_init(&session->running, 0);
+
+    // thread loop を作成する
+    session->thread_loop = pw_thread_loop_new("shiguredo-audio-playback", NULL);
+    if (!session->thread_loop) {
+        free(session->device_id);
+        free(session);
+        return NULL;
+    }
+
+    session->context = pw_context_new(
+        pw_thread_loop_get_loop(session->thread_loop), NULL, 0);
+    if (!session->context) {
+        pw_thread_loop_destroy(session->thread_loop);
+        free(session->device_id);
+        free(session);
+        return NULL;
+    }
+
+    return session;
+}
+
+void audio_pipewire_playback_session_destroy(struct PlaybackSession* session) {
+    if (!session) {
+        return;
+    }
+
+    if (atomic_load(&session->running)) {
+        audio_pipewire_playback_session_stop(session);
+    }
+
+    if (session->stream) {
+        pw_stream_destroy(session->stream);
+    }
+
+    if (session->core) {
+        spa_hook_remove(&session->core_listener);
+        pw_core_disconnect(session->core);
+    }
+
+    if (session->context) {
+        pw_context_destroy(session->context);
+    }
+
+    if (session->thread_loop) {
+        pw_thread_loop_destroy(session->thread_loop);
+    }
+
+    free(session->device_id);
+    free(session);
+}
+
+int audio_pipewire_playback_session_start(struct PlaybackSession* session,
+                                          AudioPlaybackCallback callback,
+                                          void* user_data) {
+    if (!session || !callback) {
+        return -1;
+    }
+
+    if (atomic_load(&session->running)) {
+        return 0;
+    }
+
+    session->callback = callback;
+    session->user_data = user_data;
+
+    // thread loop を開始する
+    if (pw_thread_loop_start(session->thread_loop) < 0) {
+        return -2;
+    }
+
+    pw_thread_loop_lock(session->thread_loop);
+
+    // PipeWire に接続する
+    session->core = pw_context_connect(session->context, NULL, 0);
+    if (!session->core) {
+        pw_thread_loop_unlock(session->thread_loop);
+        pw_thread_loop_stop(session->thread_loop);
+        return -3;
+    }
+
+    spa_zero(session->core_listener);
+    pw_core_add_listener(session->core, &session->core_listener,
+                         &playback_core_events, session);
+
+    // ストリームのプロパティを設定する
+    struct pw_properties* props =
+        pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio",
+                          PW_KEY_MEDIA_CATEGORY, "Playback",
+                          PW_KEY_MEDIA_ROLE, "Communication", NULL);
+    if (!props) {
+        spa_hook_remove(&session->core_listener);
+        pw_core_disconnect(session->core);
+        session->core = NULL;
+        pw_thread_loop_unlock(session->thread_loop);
+        pw_thread_loop_stop(session->thread_loop);
+        return -4;
+    }
+
+    if (session->device_id) {
+        pw_properties_set(props, PW_KEY_TARGET_OBJECT,
+                          session->device_id);
+    }
+
+    // ストリームを作成する
+    session->stream =
+        pw_stream_new(session->core, "audio-playback", props);
+    if (!session->stream) {
+        pw_properties_free(props);
+        spa_hook_remove(&session->core_listener);
+        pw_core_disconnect(session->core);
+        session->core = NULL;
+        pw_thread_loop_unlock(session->thread_loop);
+        pw_thread_loop_stop(session->thread_loop);
+        return -4;
+    }
+
+    spa_zero(session->stream_listener);
+    pw_stream_add_listener(session->stream, &session->stream_listener,
+                           &playback_stream_events, session);
+
+    // オーディオフォーマットを設定する
+    uint8_t params_buffer[1024];
+    struct spa_pod_builder builder =
+        SPA_POD_BUILDER_INIT(params_buffer, sizeof(params_buffer));
+
+    struct spa_audio_info_raw audio_info = SPA_AUDIO_INFO_RAW_INIT(
+        .format = SPA_AUDIO_FORMAT_S16_LE,
+        .rate = session->sample_rate,
+        .channels = session->channels);
+
+    const struct spa_pod* params[1];
+    params[0] = spa_format_audio_raw_build(&builder, SPA_PARAM_EnumFormat,
+                                           &audio_info);
+
+    // 再生ストリームを接続する (PW_DIRECTION_OUTPUT)
+    int result = pw_stream_connect(
+        session->stream, PW_DIRECTION_OUTPUT, PW_ID_ANY,
+        PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS,
+        params, 1);
+
+    if (result < 0) {
+        pw_stream_destroy(session->stream);
+        session->stream = NULL;
+        spa_hook_remove(&session->core_listener);
+        pw_core_disconnect(session->core);
+        session->core = NULL;
+        pw_thread_loop_unlock(session->thread_loop);
+        pw_thread_loop_stop(session->thread_loop);
+        return -5;
+    }
+
+    // ストリームが streaming 状態になるまで待機する
+    while (1) {
+        enum pw_stream_state state = pw_stream_get_state(
+            session->stream, NULL);
+        if (state == PW_STREAM_STATE_STREAMING) {
+            break;
+        }
+        if (state == PW_STREAM_STATE_ERROR ||
+            state == PW_STREAM_STATE_UNCONNECTED) {
+            pw_stream_destroy(session->stream);
+            session->stream = NULL;
+            spa_hook_remove(&session->core_listener);
+            pw_core_disconnect(session->core);
+            session->core = NULL;
+            pw_thread_loop_unlock(session->thread_loop);
+            pw_thread_loop_stop(session->thread_loop);
+            return -5;
+        }
+        pw_thread_loop_wait(session->thread_loop);
+    }
+
+    atomic_store(&session->running, 1);
+    pw_thread_loop_unlock(session->thread_loop);
+
+    return 0;
+}
+
+void audio_pipewire_playback_session_stop(struct PlaybackSession* session) {
+    if (!session || !atomic_load(&session->running)) {
+        return;
+    }
+
+    atomic_store(&session->running, 0);
+
+    pw_thread_loop_lock(session->thread_loop);
+
+    if (session->stream) {
+        pw_stream_disconnect(session->stream);
+    }
+
+    pw_thread_loop_unlock(session->thread_loop);
+
+    pw_thread_loop_stop(session->thread_loop);
+}
+
+int audio_pipewire_playback_session_sample_rate(struct PlaybackSession* session) {
+    if (!session) {
+        return 0;
+    }
+    return session->sample_rate;
+}
+
+int audio_pipewire_playback_session_channels(struct PlaybackSession* session) {
+    if (!session) {
+        return 0;
+    }
+    return session->channels;
+}

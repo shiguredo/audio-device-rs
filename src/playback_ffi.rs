@@ -1,61 +1,309 @@
 //! macOS / Linux 共通のオーディオ再生実装。
 //!
-//! 現時点では macos/ffi の再生は未実装のため、全ての操作がエラーを返すスタブ。
+//! バックエンドごとに FFI 関数群を [PlaybackOps] で渡し、[FfiPlaybackImpl] が
+//! 再生の実装を一括で提供する。
 
-use crate::common::{AudioPlaybackConfig, PlaybackFrame};
+use std::ffi::{CString, c_char, c_void};
+use std::ptr::NonNull;
+
+use crate::common::{AudioFormat, AudioPlaybackConfig, PlaybackFrame};
 use crate::error::{Error, Result};
+use crate::ffi;
 
-/// バックエンド固有の FFI 関数テーブル（将来の拡張用）。
-struct PlaybackOps {}
+// ---------------------------------------------------------------------------
+// バックエンドとの境界
+// ---------------------------------------------------------------------------
+
+/// バックエンド固有の FFI 関数テーブル。
+struct PlaybackOps {
+    pub session_create: unsafe extern "C" fn(
+        device_id: *const c_char,
+        sample_rate: i32,
+        channels: i32,
+    ) -> *mut ffi::PlaybackSession,
+    pub session_start: unsafe extern "C" fn(
+        session: *mut ffi::PlaybackSession,
+        callback: ffi::AudioPlaybackCallback,
+        context: *mut c_void,
+    ) -> i32,
+    pub session_stop: unsafe extern "C" fn(session: *mut ffi::PlaybackSession),
+    pub session_destroy: unsafe extern "C" fn(session: *mut ffi::PlaybackSession),
+    pub session_sample_rate: unsafe extern "C" fn(session: *mut ffi::PlaybackSession) -> i32,
+    pub session_channels: unsafe extern "C" fn(session: *mut ffi::PlaybackSession) -> i32,
+}
+
+// ---------------------------------------------------------------------------
+// コールバックコンテキスト
+// ---------------------------------------------------------------------------
+
+pub(crate) struct PlaybackContext {
+    pub callback: Box<dyn Fn() -> Option<PlaybackFrame> + Send + Sync>,
+}
+
+// ---------------------------------------------------------------------------
+// 汎用再生実装
+// ---------------------------------------------------------------------------
 
 pub(crate) struct FfiPlaybackImpl {
-    _ops: &'static PlaybackOps,
+    ops: &'static PlaybackOps,
+    session: Option<NonNull<ffi::PlaybackSession>>,
+    context: Option<Box<PlaybackContext>>,
     config: AudioPlaybackConfig,
+    actual_sample_rate: i32,
+    actual_channels: i32,
+    running: bool,
 }
 
 impl FfiPlaybackImpl {
+    fn new(
+        ops: &'static PlaybackOps,
+        config: AudioPlaybackConfig,
+        callback: impl Fn() -> Option<PlaybackFrame> + Send + Sync + 'static,
+    ) -> Result<Self> {
+        let device_id_cstr = config.device_id.as_ref().map(|s| CString::new(s.as_str()));
+        let device_id_ptr = match &device_id_cstr {
+            Some(Ok(cstr)) => cstr.as_ptr(),
+            Some(Err(_)) => {
+                return Err(Error::NullPointer("device_id contains null byte"));
+            }
+            None => std::ptr::null(),
+        };
+
+        let session =
+            unsafe { (ops.session_create)(device_id_ptr, config.sample_rate, config.channels) };
+        let session = NonNull::new(session).ok_or(Error::SessionCreateFailed)?;
+
+        let actual_sample_rate = unsafe { (ops.session_sample_rate)(session.as_ptr()) };
+        let actual_channels = unsafe { (ops.session_channels)(session.as_ptr()) };
+
+        let context = Box::new(PlaybackContext {
+            callback: Box::new(callback),
+        });
+
+        Ok(Self {
+            ops,
+            session: Some(session),
+            context: Some(context),
+            config,
+            actual_sample_rate,
+            actual_channels,
+            running: false,
+        })
+    }
+
     #[cfg(enable_coreaudio)]
-    pub(crate) fn new_coreaudio<F>(_config: AudioPlaybackConfig, _callback: F) -> Result<Self>
+    pub(crate) fn new_coreaudio<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
         F: Fn() -> Option<PlaybackFrame> + Send + Sync + 'static,
     {
-        Err(Error::SessionCreateFailed)
+        Self::new(&OPS_COREAUDIO, config, callback)
     }
 
     #[cfg(enable_pulse)]
-    pub(crate) fn new_pulse<F>(_config: AudioPlaybackConfig, _callback: F) -> Result<Self>
+    pub(crate) fn new_pulse<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
         F: Fn() -> Option<PlaybackFrame> + Send + Sync + 'static,
     {
-        Err(Error::SessionCreateFailed)
+        Self::new(&OPS_PULSE, config, callback)
     }
 
     #[cfg(enable_pipewire)]
-    pub(crate) fn new_pipewire<F>(_config: AudioPlaybackConfig, _callback: F) -> Result<Self>
+    pub(crate) fn new_pipewire<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
         F: Fn() -> Option<PlaybackFrame> + Send + Sync + 'static,
     {
-        Err(Error::SessionCreateFailed)
+        Self::new(&OPS_PIPEWIRE, config, callback)
     }
 
     pub fn start(&mut self) -> Result<()> {
-        Err(Error::SessionStartFailed)
+        let session = self.session.ok_or(Error::SessionStartFailed)?;
+        let context = self.context.as_mut().ok_or(Error::SessionStartFailed)?;
+
+        if self.running {
+            return Ok(());
+        }
+
+        // 再生用コールバックコンテキストのポインタを C 側に渡す。
+        // FfiPlaybackImpl の生存期間中は Box<PlaybackContext> が有効であるため、
+        // C 側からのコールバックは安全に参照できる。
+        let context_ptr = &mut **context as *mut PlaybackContext as *mut c_void;
+
+        let ret = unsafe {
+            (self.ops.session_start)(session.as_ptr(), Some(playback_callback), context_ptr)
+        };
+        if ret < 0 {
+            return Err(Error::SessionStartFailed);
+        }
+
+        self.running = true;
+        Ok(())
     }
 
-    pub fn stop(&mut self) {}
+    pub fn stop(&mut self) {
+        if self.running {
+            if let Some(session) = self.session {
+                unsafe { (self.ops.session_stop)(session.as_ptr()) };
+            }
+            self.running = false;
+        }
+    }
 
     pub fn config(&self) -> &AudioPlaybackConfig {
         &self.config
     }
 
     pub fn sample_rate(&self) -> i32 {
-        self.config.sample_rate
+        self.actual_sample_rate
     }
 
     pub fn channels(&self) -> i32 {
-        self.config.channels
+        self.actual_channels
     }
 }
 
+impl Drop for FfiPlaybackImpl {
+    fn drop(&mut self) {
+        self.stop();
+        if let Some(session) = self.session.take() {
+            unsafe { (self.ops.session_destroy)(session.as_ptr()) };
+        }
+    }
+}
+
+// SAFETY: 内部に保持する FFI セッションポインタは C 側のスレッド安全性に従い、
+// PlaybackContext のコールバックは Box<dyn Fn + Send + Sync> でスレッド安全。
 unsafe impl Send for FfiPlaybackImpl {}
-unsafe impl Sync for FfiPlaybackImpl {}
+
+// ---------------------------------------------------------------------------
+// extern "C" 再生コールバック（全バックエンド共通）
+// ---------------------------------------------------------------------------
+
+extern "C" fn playback_callback(
+    user_data: *mut c_void,
+    buffer: *mut c_void,
+    frames: i32,
+    channels: i32,
+    _sample_rate: i32,
+    format: i32,
+) -> i32 {
+    if user_data.is_null() || buffer.is_null() || frames <= 0 || channels <= 0 {
+        return 0;
+    }
+
+    let context = unsafe { &*(user_data as *const PlaybackContext) };
+
+    let audio_format = match AudioFormat::from_ffi(format) {
+        Ok(f) => f,
+        Err(_) => return 0,
+    };
+    let bytes_per_sample: usize = match audio_format {
+        AudioFormat::S16 => 2,
+        AudioFormat::F32 => 4,
+    };
+
+    let Some(buffer_size) = (frames as usize)
+        .checked_mul(channels as usize)
+        .and_then(|n| n.checked_mul(bytes_per_sample))
+    else {
+        return 0;
+    };
+
+    // ユーザーコールバックの panic は FFI 境界を越えて unwind しないようにする
+    let frame_opt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (context.callback)()))
+        .unwrap_or(None);
+
+    let Some(frame) = frame_opt else {
+        return 0;
+    };
+
+    let dst = buffer as *mut u8;
+
+    if frame.format == audio_format {
+        let copy_len = frame.data.len().min(buffer_size);
+        let sample_size = channels as usize * bytes_per_sample;
+        let copy_frames = copy_len / sample_size;
+        let copy_bytes = copy_frames * sample_size;
+        unsafe {
+            std::ptr::copy_nonoverlapping(frame.data.as_ptr(), dst, copy_bytes);
+            if copy_bytes < buffer_size {
+                std::ptr::write_bytes(dst.add(copy_bytes), 0, buffer_size - copy_bytes);
+            }
+        }
+        copy_frames as i32
+    } else if frame.format == AudioFormat::F32 && audio_format == AudioFormat::S16 {
+        // F32 -> S16 変換
+        // Vec<u8> のアライメントは 1 なので read_unaligned で読み取る
+        let src_count = frame.data.len() / 4;
+        let dst_count = buffer_size / 2;
+        let copy_len = src_count.min(dst_count);
+        let src_ptr = frame.data.as_ptr() as *const f32;
+        unsafe {
+            for i in 0..copy_len {
+                let sample = src_ptr.add(i).read_unaligned();
+                let clamped = if sample.is_nan() {
+                    0.0
+                } else {
+                    sample.clamp(-1.0, 1.0)
+                };
+                (dst as *mut i16)
+                    .add(i)
+                    .write_unaligned((clamped * 32767.0) as i16);
+            }
+            std::ptr::write_bytes((dst as *mut i16).add(copy_len), 0, dst_count - copy_len);
+        }
+        (copy_len as i32) / channels
+    } else if frame.format == AudioFormat::S16 && audio_format == AudioFormat::F32 {
+        // S16 -> F32 変換
+        // Vec<u8> のアライメントは 1 なので read_unaligned で読み取る
+        let src_count = frame.data.len() / 2;
+        let dst_count = buffer_size / 4;
+        let copy_len = src_count.min(dst_count);
+        let src_ptr = frame.data.as_ptr() as *const i16;
+        unsafe {
+            for i in 0..copy_len {
+                let sample = src_ptr.add(i).read_unaligned();
+                (dst as *mut f32)
+                    .add(i)
+                    .write_unaligned(sample as f32 / 32768.0);
+            }
+            std::ptr::write_bytes((dst as *mut f32).add(copy_len), 0, dst_count - copy_len);
+        }
+        (copy_len as i32) / channels
+    } else {
+        0
+    }
+}
+
+// ---------------------------------------------------------------------------
+// バックエンド別 OPS 定数
+// ---------------------------------------------------------------------------
+
+#[cfg(enable_coreaudio)]
+const OPS_COREAUDIO: PlaybackOps = PlaybackOps {
+    session_create: ffi::audio_coreaudio_playback_session_create,
+    session_start: ffi::audio_coreaudio_playback_session_start,
+    session_stop: ffi::audio_coreaudio_playback_session_stop,
+    session_destroy: ffi::audio_coreaudio_playback_session_destroy,
+    session_sample_rate: ffi::audio_coreaudio_playback_session_sample_rate,
+    session_channels: ffi::audio_coreaudio_playback_session_channels,
+};
+
+#[cfg(enable_pulse)]
+const OPS_PULSE: PlaybackOps = PlaybackOps {
+    session_create: ffi::audio_pulse_playback_session_create,
+    session_start: ffi::audio_pulse_playback_session_start,
+    session_stop: ffi::audio_pulse_playback_session_stop,
+    session_destroy: ffi::audio_pulse_playback_session_destroy,
+    session_sample_rate: ffi::audio_pulse_playback_session_sample_rate,
+    session_channels: ffi::audio_pulse_playback_session_channels,
+};
+
+#[cfg(enable_pipewire)]
+const OPS_PIPEWIRE: PlaybackOps = PlaybackOps {
+    session_create: ffi::audio_pipewire_playback_session_create,
+    session_start: ffi::audio_pipewire_playback_session_start,
+    session_stop: ffi::audio_pipewire_playback_session_stop,
+    session_destroy: ffi::audio_pipewire_playback_session_destroy,
+    session_sample_rate: ffi::audio_pipewire_playback_session_sample_rate,
+    session_channels: ffi::audio_pipewire_playback_session_channels,
+};
