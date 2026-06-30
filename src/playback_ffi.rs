@@ -269,3 +269,386 @@ const OPS_PIPEWIRE: PlaybackOps = PlaybackOps {
     session_sample_rate: ffi::audio_pipewire_playback_session_sample_rate,
     session_channels: ffi::audio_pipewire_playback_session_channels,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// テスト用の PlaybackContext を作成する
+    fn make_context(
+        cb: impl Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
+    ) -> Box<PlaybackContext> {
+        Box::new(PlaybackContext {
+            callback: Box::new(cb),
+        })
+    }
+
+    /// テスト用の PlaybackContext のポインタを取得する
+    fn context_ptr(ctx: &PlaybackContext) -> *mut c_void {
+        ctx as *const PlaybackContext as *mut c_void
+    }
+
+    // -----------------------------------------------------------------------
+    // NULL 引数・境界値テスト
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn returns_zero_when_user_data_is_null() {
+        let mut buf = vec![0u8; 480];
+        let ret = playback_callback(
+            std::ptr::null_mut(),
+            buf.as_mut_ptr() as *mut c_void,
+            480,
+            1,
+            48000,
+            0,
+        );
+        assert_eq!(ret, 0);
+    }
+
+    #[test]
+    fn returns_zero_when_buffer_is_null() {
+        let ctx = make_context(|_, _, _| None);
+        let ret = playback_callback(context_ptr(&ctx), std::ptr::null_mut(), 480, 1, 48000, 0);
+        assert_eq!(ret, 0);
+    }
+
+    #[test]
+    fn returns_zero_when_frames_is_zero() {
+        let ctx = make_context(|_, _, _| None);
+        let mut buf = vec![0u8; 480];
+        let ret = playback_callback(
+            context_ptr(&ctx),
+            buf.as_mut_ptr() as *mut c_void,
+            0,
+            1,
+            48000,
+            0,
+        );
+        assert_eq!(ret, 0);
+    }
+
+    #[test]
+    fn returns_zero_when_channels_is_zero() {
+        let ctx = make_context(|_, _, _| None);
+        let mut buf = vec![0u8; 480];
+        let ret = playback_callback(
+            context_ptr(&ctx),
+            buf.as_mut_ptr() as *mut c_void,
+            480,
+            0,
+            48000,
+            0,
+        );
+        assert_eq!(ret, 0);
+    }
+
+    #[test]
+    fn returns_zero_when_sample_rate_is_zero() {
+        let ctx = make_context(|_, _, _| None);
+        let mut buf = vec![0u8; 480];
+        let ret = playback_callback(
+            context_ptr(&ctx),
+            buf.as_mut_ptr() as *mut c_void,
+            480,
+            1,
+            0,
+            0,
+        );
+        assert_eq!(ret, 0);
+    }
+
+    #[test]
+    fn returns_zero_when_format_is_unknown() {
+        let mut buf = vec![0u8; 480];
+        let ctx = make_context(|frames, channels, sample_rate| {
+            Some(
+                PlaybackFrame::from_s16(
+                    &vec![0i16; (frames * channels) as usize],
+                    channels,
+                    sample_rate,
+                )
+                .expect("S16 フレーム作成に成功する"),
+            )
+        });
+        let ret = playback_callback(
+            context_ptr(&ctx),
+            buf.as_mut_ptr() as *mut c_void,
+            240,
+            1,
+            48000,
+            99,
+        );
+        assert_eq!(ret, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // コールバックが None を返す場合
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn fills_buffer_with_silence_when_callback_returns_none() {
+        let ctx = make_context(|_, _, _| None);
+        let mut buf = vec![0xCCu8; 480];
+        let ret = playback_callback(
+            context_ptr(&ctx),
+            buf.as_mut_ptr() as *mut c_void,
+            240,
+            2,
+            48000,
+            0,
+        );
+        assert_eq!(ret, 0);
+        // コールバックが None の場合は 0 を返す（無音の埋め込みは C 側の責務）
+    }
+
+    // -----------------------------------------------------------------------
+    // 同一フォーマット (S16 → S16)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn same_format_s16_copies_samples() {
+        let channels = 2;
+        let frames = 10;
+        let sample_rate = 48000;
+        let samples: Vec<i16> = (0..(frames * channels) as i16).collect();
+        let ctx = make_context({
+            let samples = samples.clone();
+            move |f, c, sr| {
+                assert_eq!(f, frames);
+                assert_eq!(c, channels);
+                assert_eq!(sr, sample_rate);
+                Some(PlaybackFrame::from_s16(&samples, c, sr).expect("S16 フレーム作成に成功する"))
+            }
+        });
+        let buf_size = (frames * channels) as usize * 2;
+        let mut buf = vec![0u8; buf_size];
+        let ret = playback_callback(
+            context_ptr(&ctx),
+            buf.as_mut_ptr() as *mut c_void,
+            frames,
+            channels,
+            sample_rate,
+            0,
+        );
+        assert_eq!(ret, frames);
+        for (i, sample) in samples.iter().enumerate() {
+            let offset = i * 2;
+            let written = i16::from_le_bytes([buf[offset], buf[offset + 1]]);
+            assert_eq!(written, *sample, "サンプル {i} が一致しない");
+        }
+    }
+
+    #[test]
+    fn same_format_s16_pads_with_silence_when_data_is_shorter() {
+        let channels = 2;
+        let partial_frames = 4;
+        let buf_frames = 10;
+        let sample_rate = 48000;
+        let samples: Vec<i16> = (0..(partial_frames * channels) as i16).collect();
+        let ctx = make_context({
+            let samples = samples.clone();
+            move |_, c, sr| {
+                Some(PlaybackFrame::from_s16(&samples, c, sr).expect("S16 フレーム作成に成功する"))
+            }
+        });
+        let buf_size = (buf_frames * channels) as usize * 2;
+        let mut buf = vec![0xCCu8; buf_size];
+        let ret = playback_callback(
+            context_ptr(&ctx),
+            buf.as_mut_ptr() as *mut c_void,
+            buf_frames,
+            channels,
+            sample_rate,
+            0,
+        );
+        // 書き込まれるのは partial_frames 分
+        assert_eq!(ret, partial_frames);
+        // 書き込まれた部分の検証
+        for (i, sample) in samples.iter().enumerate() {
+            let offset = i * 2;
+            let written = i16::from_le_bytes([buf[offset], buf[offset + 1]]);
+            assert_eq!(written, *sample, "サンプル {i} が一致しない");
+        }
+        // 残りがゼロで埋められていることを確認する
+        let written_bytes = (partial_frames * channels) as usize * 2;
+        assert!(buf[written_bytes..].iter().all(|&b| b == 0));
+    }
+
+    // -----------------------------------------------------------------------
+    // 同一フォーマット (F32 → F32)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn same_format_f32_copies_samples() {
+        let channels = 1;
+        let frames = 8;
+        let sample_rate = 48000;
+        let samples: Vec<f32> = vec![0.0, 0.25, -0.5, 0.75, -1.0, 0.125, 0.0, 0.5];
+        let ctx = make_context({
+            let samples = samples.clone();
+            move |_, c, sr| {
+                Some(PlaybackFrame::from_f32(&samples, c, sr).expect("F32 フレーム作成に成功する"))
+            }
+        });
+        let buf_size = (frames * channels) as usize * 4;
+        let mut buf = vec![0u8; buf_size];
+        let ret = playback_callback(
+            context_ptr(&ctx),
+            buf.as_mut_ptr() as *mut c_void,
+            frames,
+            channels,
+            sample_rate,
+            1,
+        );
+        assert_eq!(ret, frames);
+        for (i, sample) in samples.iter().enumerate() {
+            let offset = i * 4;
+            let bytes: [u8; 4] = [
+                buf[offset],
+                buf[offset + 1],
+                buf[offset + 2],
+                buf[offset + 3],
+            ];
+            let written = f32::from_le_bytes(bytes);
+            assert!(
+                (written - sample).abs() < 1e-7,
+                "サンプル {i}: 期待 {sample}, 実際 {written}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // フォーマット変換 (F32 → S16)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn converts_f32_to_s16() {
+        let channels = 1;
+        let frames = 8;
+        let sample_rate = 48000;
+        let samples: Vec<f32> = vec![0.0, 0.5, -0.5, 1.0, -1.0, 0.25, 0.0, 0.0];
+        let ctx = make_context({
+            let samples = samples.clone();
+            move |_, c, sr| {
+                Some(PlaybackFrame::from_f32(&samples, c, sr).expect("F32 フレーム作成に成功する"))
+            }
+        });
+        let buf_size = (frames * channels) as usize * 2;
+        let mut buf = vec![0u8; buf_size];
+        let ret = playback_callback(
+            context_ptr(&ctx),
+            buf.as_mut_ptr() as *mut c_void,
+            frames,
+            channels,
+            sample_rate,
+            0,
+        );
+        assert_eq!(ret, frames);
+        let expected: Vec<i16> = samples
+            .iter()
+            .map(|&s| {
+                let clamped = if s.is_nan() { 0.0 } else { s.clamp(-1.0, 1.0) };
+                (clamped * 32767.0) as i16
+            })
+            .collect();
+        for (i, exp) in expected.iter().enumerate() {
+            let offset = i * 2;
+            let written = i16::from_le_bytes([buf[offset], buf[offset + 1]]);
+            assert_eq!(written, *exp, "サンプル {i}: 期待 {exp}, 実際 {written}");
+        }
+    }
+
+    #[test]
+    fn f32_to_s16_handles_nan() {
+        let channels = 1;
+        let frames = 4;
+        let sample_rate = 48000;
+        let nan_data: Vec<f32> = vec![f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0];
+        let ctx = make_context(move |_, c, sr| {
+            Some(PlaybackFrame::from_f32(&nan_data, c, sr).expect("F32 フレーム作成に成功する"))
+        });
+        let buf_size = (frames * channels) as usize * 2;
+        let mut buf = vec![0xFFu8; buf_size];
+        let ret = playback_callback(
+            context_ptr(&ctx),
+            buf.as_mut_ptr() as *mut c_void,
+            frames,
+            channels,
+            sample_rate,
+            0,
+        );
+        assert_eq!(ret, frames);
+        // NaN → 0, +Inf → clamp → 32767, -Inf → clamp → -32767, 0.0 → 0
+        let expected: [i16; 4] = [0, 32767, -32767, 0];
+        for (i, exp) in expected.iter().enumerate() {
+            let offset = i * 2;
+            let written = i16::from_le_bytes([buf[offset], buf[offset + 1]]);
+            assert_eq!(written, *exp, "サンプル {i}: 期待 {exp}, 実際 {written}");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // フォーマット変換 (S16 → F32)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn converts_s16_to_f32() {
+        let channels = 1;
+        let frames = 8;
+        let sample_rate = 48000;
+        let samples: Vec<i16> = vec![0, 16384, -16384, 32767, -32767, 8192, 0, 0];
+        let ctx = make_context({
+            let samples = samples.clone();
+            move |_, c, sr| {
+                Some(PlaybackFrame::from_s16(&samples, c, sr).expect("S16 フレーム作成に成功する"))
+            }
+        });
+        let buf_size = (frames * channels) as usize * 4;
+        let mut buf = vec![0u8; buf_size];
+        let ret = playback_callback(
+            context_ptr(&ctx),
+            buf.as_mut_ptr() as *mut c_void,
+            frames,
+            channels,
+            sample_rate,
+            1,
+        );
+        assert_eq!(ret, frames);
+        let expected: Vec<f32> = samples.iter().map(|&s| s as f32 / 32768.0).collect();
+        for (i, exp) in expected.iter().enumerate() {
+            let offset = i * 4;
+            let bytes: [u8; 4] = [
+                buf[offset],
+                buf[offset + 1],
+                buf[offset + 2],
+                buf[offset + 3],
+            ];
+            let written = f32::from_le_bytes(bytes);
+            assert!(
+                (written - exp).abs() < 1e-7,
+                "サンプル {i}: 期待 {exp}, 実際 {written}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // バッファオーバーフローテスト
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn returns_zero_when_buffer_size_overflows() {
+        let ctx = make_context(|_, _, _| None);
+        let mut buf = vec![0u8; 480];
+        // frames * channels * bytes_per_sample が usize を超える値を与える
+        let ret = playback_callback(
+            context_ptr(&ctx),
+            buf.as_mut_ptr() as *mut c_void,
+            i32::MAX,
+            i32::MAX,
+            48000,
+            0,
+        );
+        assert_eq!(ret, 0);
+    }
+}
