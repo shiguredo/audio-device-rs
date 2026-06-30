@@ -658,16 +658,8 @@ static void stream_write_callback(pa_stream* s, size_t nbytes, void* userdata) {
 
     if (written <= 0) {
         memset(buf, 0, len);
-    } else {
-        if (written > frames) {
-            written = frames;
-        }
-        if (written < frames) {
-            // 残りを無音で埋める
-            int written_bytes = written * frame_size;
-            memset((uint8_t*)buf + written_bytes, 0, len - written_bytes);
-        }
     }
+    // written > 0 の場合は Rust 側の共通変換関数がバッファ末尾をゼロ埋めしている
 
     pa_stream_write(s, buf, len, NULL, 0, PA_SEEK_RELATIVE);
 }
