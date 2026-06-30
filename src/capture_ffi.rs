@@ -195,10 +195,7 @@ extern "C" fn frame_callback(
         Err(_) => return,
     };
 
-    let bytes_per_sample: usize = match audio_format {
-        AudioFormat::S16 => 2,
-        AudioFormat::F32 => 4,
-    };
+    let bytes_per_sample: usize = audio_format.bytes_per_sample();
 
     let Some(data_size) = (frames as usize)
         .checked_mul(channels as usize)
