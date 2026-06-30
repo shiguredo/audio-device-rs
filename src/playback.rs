@@ -24,6 +24,11 @@ pub(crate) enum AudioPlaybackInner {
 
 impl AudioPlayback {
     /// デフォルトバックエンドで再生を構築する。
+    ///
+    /// `callback` は音声データが必要になるたびに呼ばれる。
+    /// 引数は `(frames, channels, sample_rate)` で、それぞれ要求フレーム数・
+    /// チャンネル数・サンプルレートを表す。
+    /// `None` を返すと無音が再生される。
     #[cfg(any(
         enable_default_coreaudio,
         enable_default_pulse,
@@ -53,6 +58,8 @@ impl AudioPlayback {
     }
 
     /// CoreAudio で再生を構築する。
+    ///
+    /// `callback` の引数は `(frames, channels, sample_rate)`。
     #[cfg(enable_coreaudio)]
     pub fn new_coreaudio<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
@@ -64,6 +71,8 @@ impl AudioPlayback {
     }
 
     /// PulseAudio で再生を構築する。
+    ///
+    /// `callback` の引数は `(frames, channels, sample_rate)`。
     #[cfg(enable_pulse)]
     pub fn new_pulse<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
@@ -75,6 +84,8 @@ impl AudioPlayback {
     }
 
     /// PipeWire で再生を構築する。
+    ///
+    /// `callback` の引数は `(frames, channels, sample_rate)`。
     #[cfg(enable_pipewire)]
     pub fn new_pipewire<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
@@ -86,6 +97,8 @@ impl AudioPlayback {
     }
 
     /// WASAPI で再生を構築する。
+    ///
+    /// `callback` の引数は `(frames, channels, sample_rate)`。
     #[cfg(enable_wasapi)]
     pub fn new_wasapi<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
