@@ -165,6 +165,9 @@ impl WasapiPlaybackImpl {
         // スレッド生成前に running フラグを立てる
         context.running.store(true, Ordering::Release);
 
+        // スレッドに渡すための context クローン
+        let thread_context = Arc::clone(&context);
+
         // 再生スレッドを開始
         let handle = thread::Builder::new()
             .name("audio-playback".to_string())
@@ -177,7 +180,7 @@ impl WasapiPlaybackImpl {
                     sample_rate,
                     channels,
                     buffer_frames,
-                    context,
+                    thread_context,
                 );
             })
             .map_err(|_| {
@@ -313,7 +316,7 @@ fn playback_thread_func(
                     }
                 };
 
-                let dst = unsafe { std::slice::from_raw_parts_mut(data_ptr, buffer_size) };
+                let dst = std::slice::from_raw_parts_mut(data_ptr, buffer_size);
                 write_playback_frame_to_buffer(
                     &frame.data,
                     frame.format,
