@@ -549,6 +549,10 @@ int audio_pipewire_session_start(struct AudioSession* session,
         if (state == PW_STREAM_STATE_STREAMING) {
             break;
         }
+        if (state == PW_STREAM_STATE_PAUSED) {
+            pw_stream_set_active(session->stream, true);
+            break;
+        }
         if (state == PW_STREAM_STATE_ERROR ||
             state == PW_STREAM_STATE_UNCONNECTED) {
             pw_stream_destroy(session->stream);
@@ -901,6 +905,13 @@ int audio_pipewire_playback_session_start(struct PlaybackSession* session,
         enum pw_stream_state state = pw_stream_get_state(
             session->stream, NULL);
         if (state == PW_STREAM_STATE_STREAMING) {
+            break;
+        }
+        // PipeWire のバージョンや環境によってはストリームが PAUSED に遷移する。
+        // この場合 activate してからループを抜ける。
+        // セッションマネージャーが利用可能になれば自動的に streaming に遷移する。
+        if (state == PW_STREAM_STATE_PAUSED) {
+            pw_stream_set_active(session->stream, true);
             break;
         }
         if (state == PW_STREAM_STATE_ERROR ||
