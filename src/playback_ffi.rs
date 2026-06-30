@@ -207,10 +207,7 @@ extern "C" fn playback_callback(
         Ok(f) => f,
         Err(_) => return 0,
     };
-    let bytes_per_sample: usize = match audio_format {
-        AudioFormat::S16 => 2,
-        AudioFormat::F32 => 4,
-    };
+    let bytes_per_sample: usize = audio_format.bytes_per_sample();
 
     // バッファサイズを安全に計算する
     let Some(buffer_size) = (frames as usize)

@@ -34,6 +34,16 @@ impl AudioDeviceType {
     }
 }
 
+impl AudioFormat {
+    /// 1 サンプルあたりのバイト数を返す
+    pub(crate) fn bytes_per_sample(&self) -> usize {
+        match self {
+            AudioFormat::S16 => 2,
+            AudioFormat::F32 => 4,
+        }
+    }
+}
+
 #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
 impl AudioFormat {
     pub(crate) fn from_ffi(format: i32) -> Result<Self> {
@@ -270,10 +280,7 @@ pub(crate) fn write_playback_frame_to_buffer(
     if src_format == dst_format {
         // 同一フォーマットの場合はそのままコピーする
         let copy_len = src_data.len().min(dst.len());
-        let bytes_per_sample = match src_format {
-            AudioFormat::S16 => 2,
-            AudioFormat::F32 => 4,
-        };
+        let bytes_per_sample = src_format.bytes_per_sample();
         let sample_size = dst_channels * bytes_per_sample;
         let copy_frames = copy_len / sample_size;
         let copy_bytes = copy_frames * sample_size;
