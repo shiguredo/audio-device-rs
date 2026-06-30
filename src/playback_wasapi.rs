@@ -1,6 +1,5 @@
 //! Windows 用オーディオ再生 (WASAPI)
 
-use std::ptr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -10,7 +9,10 @@ use windows::{
     Win32::System::Threading::*,
 };
 
-use crate::common::{AudioDeviceType, AudioFormat, AudioPlaybackConfig, PlaybackFrame};
+use crate::common::{
+    AudioDeviceType, AudioFormat, AudioPlaybackConfig, PlaybackFrame,
+    write_playback_frame_to_buffer,
+};
 use crate::device_wasapi::{SendHandle, SendPtr, get_device_by_id};
 use crate::error::{Error, Result};
 
@@ -309,44 +311,14 @@ fn playback_thread_func(
                     }
                 };
 
-                // フォーマット変換が必要な場合の処理
-                if frame.format == AudioFormat::F32 && format == AudioFormat::S16 {
-                    // F32 -> S16 変換
-                    // Vec<u8> のアライメントは 1 なので read_unaligned で読み取る
-                    let src_count = frame.data.len() / 4;
-                    let dst_s16 =
-                        std::slice::from_raw_parts_mut(data_ptr as *mut i16, buffer_size / 2);
-                    let copy_len = src_count.min(dst_s16.len());
-                    let src_ptr = frame.data.as_ptr() as *const f32;
-                    for (i, dst) in dst_s16.iter_mut().enumerate().take(copy_len) {
-                        let sample = src_ptr.add(i).read_unaligned();
-                        *dst = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
-                    }
-                    // 残りを無音で埋める
-                    dst_s16[copy_len..].fill(0);
-                } else if frame.format == AudioFormat::S16 && format == AudioFormat::F32 {
-                    // S16 -> F32 変換
-                    // Vec<u8> のアライメントは 1 なので read_unaligned で読み取る
-                    let src_count = frame.data.len() / 2;
-                    let dst_f32 =
-                        std::slice::from_raw_parts_mut(data_ptr as *mut f32, buffer_size / 4);
-                    let copy_len = src_count.min(dst_f32.len());
-                    let src_ptr = frame.data.as_ptr() as *const i16;
-                    for (i, dst) in dst_f32.iter_mut().enumerate().take(copy_len) {
-                        let sample = src_ptr.add(i).read_unaligned();
-                        *dst = sample as f32 / 32768.0;
-                    }
-                    // 残りを無音で埋める
-                    dst_f32[copy_len..].fill(0.0);
-                } else {
-                    // 同じフォーマット、そのままコピー
-                    let copy_len = frame.data.len().min(buffer_size);
-                    ptr::copy_nonoverlapping(frame.data.as_ptr(), data_ptr, copy_len);
-                    // 残りを無音で埋める
-                    if copy_len < buffer_size {
-                        ptr::write_bytes(data_ptr.add(copy_len), 0, buffer_size - copy_len);
-                    }
-                }
+                let dst = unsafe { std::slice::from_raw_parts_mut(data_ptr, buffer_size) };
+                write_playback_frame_to_buffer(
+                    &frame.data,
+                    frame.format,
+                    dst,
+                    format,
+                    channels as usize,
+                );
                 let _ = render_client.ReleaseBuffer(frames_available, 0);
             } else {
                 // データがない場合は無音
