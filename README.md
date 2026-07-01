@@ -86,7 +86,7 @@ use shiguredo_audio_device::{AudioDeviceList, AudioDeviceType};
 
 // 全デバイス（入力・出力）を取得
 let device_list = AudioDeviceList::enumerate()?;
-for device in device_list.devices() {
+for device in &device_list {
     let device_type = match device.device_type() {
         AudioDeviceType::Input => "入力",
         AudioDeviceType::Output => "出力",

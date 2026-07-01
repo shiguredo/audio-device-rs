@@ -361,7 +361,7 @@ impl AudioDeviceList {
     // -----------------------------------------------------------------------
 
     /// デバイスのスライスを取得する。
-    pub fn devices(&self) -> &[AudioDevice] {
+    pub fn as_slice(&self) -> &[AudioDevice] {
         match &self.0 {
             #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
             AudioDeviceListInner::Ffi { devices, .. } => devices,
@@ -372,12 +372,21 @@ impl AudioDeviceList {
 
     /// デバイス数を取得する。
     pub fn len(&self) -> usize {
-        self.devices().len()
+        self.as_slice().len()
     }
 
     /// デバイスが空かどうかを返す。
     pub fn is_empty(&self) -> bool {
-        self.devices().is_empty()
+        self.as_slice().is_empty()
+    }
+}
+
+impl<'a> IntoIterator for &'a AudioDeviceList {
+    type Item = &'a AudioDevice;
+    type IntoIter = std::slice::Iter<'a, AudioDevice>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.as_slice().iter()
     }
 }
 

@@ -17,7 +17,7 @@ fn main() {
             f.member(
                 "devices",
                 nojson::array(|f| {
-                    for device in device_list.devices() {
+                    for device in &device_list {
                         let name = device.name().unwrap_or_default();
                         let unique_id = device.unique_id().unwrap_or_default();
                         let device_type = match device.device_type() {
