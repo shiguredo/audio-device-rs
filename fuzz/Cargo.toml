@@ -7,28 +7,28 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
+[[bin]]
+doc = false
+name = "audio_frame_as_s16"
+path = "fuzz_targets/audio_frame_as_s16.rs"
+test = false
+
+[[bin]]
+doc = false
+name = "playback_frame_from_s16"
+path = "fuzz_targets/playback_frame_from_s16.rs"
+test = false
+
+[[bin]]
+doc = false
+name = "playback_frame_from_f32"
+path = "fuzz_targets/playback_frame_from_f32.rs"
+test = false
+
 [dependencies]
-libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
+libfuzzer-sys = "0.4"
 
 [dependencies.shiguredo_audio_device]
 path = ".."
 default-features = false
-
-[[bin]]
-name = "audio_frame_as_s16"
-path = "fuzz_targets/audio_frame_as_s16.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "playback_frame_from_s16"
-path = "fuzz_targets/playback_frame_from_s16.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "playback_frame_from_f32"
-path = "fuzz_targets/playback_frame_from_f32.rs"
-test = false
-doc = false
