@@ -45,11 +45,8 @@ hooks = [
   # 実行権限のあるファイルに shebang があるか確認する
   { id = "check-executables-have-shebangs" },
   # shebang 付きスクリプトに実行権限があるか確認する
-  # Rust のクレート属性 (#![...]) が shebang と誤判定されるため *.rs は対象外にする
-  {
-    id = "check-shebang-scripts-are-executable",
-    exclude = { glob = "**/*.rs" }
-  },
+  # Rust の inner attribute #![...] が shebang と誤判定されるため Rust ファイルは除外する
+  { id = "check-shebang-scripts-are-executable", exclude_types = ["rust"] },
 ]
 
 # tombi: TOML のフォーマッタ・リンタ
