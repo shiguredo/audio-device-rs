@@ -1,63 +1,77 @@
-fail_fast = true
+# Configuration file for `prek`, a git hook framework written in Rust.
+# See https://prek.j178.dev for more information.
+#:schema https://www.schemastore.org/prek.json
 
+# 最初に失敗したフックで残りをスキップする
+fail_fast = true
+# stages 未指定のフックは pre-commit でだけ実行される
+default_stages = ["pre-commit"]
+# prek install で pre-commit と pre-push の両方の Git フックを入れる
+default_install_hook_types = ["pre-commit", "pre-push"]
+exclude = { glob = ["target/**", "fuzz/target/**"] }
+
+# prek 組み込みフック (オフラインで動作する Rust ネイティブ実装)
 [[repos]]
 repo = "builtin"
 hooks = [
   { id = "trailing-whitespace" },
   { id = "end-of-file-fixer" },
   { id = "check-toml" },
+  # マージコンフリクトマーカーが残ったコミットを防ぐ
+  { id = "check-merge-conflict" },
+  # 大文字小文字だけが異なるファイル名の衝突を防ぐ
+  { id = "check-case-conflict" },
+  # 大きなファイルの誤コミットを防ぐ
+  { id = "check-added-large-files" },
+  # 秘密鍵の誤コミットを防ぐ
+  { id = "detect-private-key" },
+  # 改行コードの混在を防ぐ
+  { id = "mixed-line-ending" },
 ]
 
+# tombi: TOML のフォーマッタ・リンタ
+# rev は prek auto-update で更新する
+[[repos]]
+repo = "https://github.com/tombi-toml/tombi-pre-commit"
+rev = "v1.2.0"
+hooks = [
+  # Cargo.lock は cargo が独自に再生成するため対象外
+  { id = "tombi-lint", exclude = { glob = ["Cargo.lock"] } },
+  { id = "tombi-format", exclude = { glob = ["Cargo.lock"] } },
+]
+
+# プロジェクト固有のローカルフック
+# priority が小さいほど先に実行される。同じ priority なら並列実行される
 [[repos]]
 repo = "local"
-hooks = [
-  {
-    id = "tombi-fmt",
-    name = "tombi fmt",
-    entry = "tombi format --check",
-    language = "system",
-    types = ["toml"],
-    # Cargo.lock は cargo が独自に再生成するため対象外
-    exclude = { glob = ["Cargo.lock"] },
-    pass_filenames = false,
-    priority = 0,
-  },
-  {
-    id = "tombi-lint",
-    name = "tombi lint",
-    entry = "tombi lint",
-    language = "system",
-    types = ["toml"],
-    # Cargo.lock は cargo が独自に再生成するため対象外
-    exclude = { glob = ["Cargo.lock"] },
-    pass_filenames = false,
-    priority = 5,
-  },
-  {
-    id = "cargo-fmt",
-    name = "cargo fmt",
-    entry = "cargo fmt --all -- --check",
-    language = "system",
-    types = ["rust"],
-    pass_filenames = false,
-    priority = 10,
-  },
-  {
-    id = "cargo-clippy",
-    name = "cargo clippy",
-    entry = "cargo clippy --workspace --all-targets -- -D warnings",
-    language = "system",
-    types = ["rust"],
-    pass_filenames = false,
-    priority = 20,
-  },
-  {
-    id = "cargo-test",
-    name = "cargo test",
-    entry = "cargo test --workspace",
-    language = "system",
-    types = ["rust"],
-    pass_filenames = false,
-    priority = 30,
-  },
-]
+
+# cargo fmt: フォーマットチェック
+[[repos.hooks]]
+id = "cargo-fmt"
+name = "cargo fmt"
+entry = "cargo fmt --all -- --check"
+language = "system"
+types = ["rust"]
+pass_filenames = false
+priority = 0
+
+# cargo clippy: リンタ
+[[repos.hooks]]
+id = "cargo-clippy"
+name = "cargo clippy"
+entry = "cargo clippy --workspace --all-targets -- -D warnings"
+language = "system"
+types = ["rust"]
+pass_filenames = false
+priority = 10
+
+# cargo test: コミットを遅くしないため pre-push でだけ実行する
+[[repos.hooks]]
+id = "cargo-test"
+name = "cargo test"
+entry = "cargo test --workspace"
+language = "system"
+types = ["rust"]
+pass_filenames = false
+stages = ["pre-push"]
+priority = 20
