@@ -14,19 +14,42 @@ exclude = { glob = ["target/**", "fuzz/target/**"] }
 [[repos]]
 repo = "builtin"
 hooks = [
+  # 行末の空白を取り除く
   { id = "trailing-whitespace" },
+  # ファイル末尾を改行 1 つで終わらせる
   { id = "end-of-file-fixer" },
+  # ファイル先頭の UTF-8 BOM を取り除く
+  { id = "fix-byte-order-marker" },
+  # TOML の構文エラーを検出する
   { id = "check-toml" },
+  # YAML の構文エラーを検出する
+  { id = "check-yaml" },
+  # JSON の構文エラーと重複キーを検出する
+  { id = "check-json" },
   # マージコンフリクトマーカーが残ったコミットを防ぐ
   { id = "check-merge-conflict" },
   # 大文字小文字だけが異なるファイル名の衝突を防ぐ
   { id = "check-case-conflict" },
+  # Windows で使えないファイル名の混入を防ぐ
+  { id = "check-illegal-windows-names" },
   # 大きなファイルの誤コミットを防ぐ
   { id = "check-added-large-files" },
   # 秘密鍵の誤コミットを防ぐ
   { id = "detect-private-key" },
   # 改行コードの混在を防ぐ
   { id = "mixed-line-ending" },
+  # リンク切れのシンボリックリンクを検出する
+  { id = "check-symlinks" },
+  # シンボリックリンクだったファイルが実体ファイルとしてコミットされるのを検出する
+  { id = "destroyed-symlinks" },
+  # 実行権限のあるファイルに shebang があるか確認する
+  { id = "check-executables-have-shebangs" },
+  # shebang 付きスクリプトに実行権限があるか確認する
+  # Rust のクレート属性 (#![...]) が shebang と誤判定されるため *.rs は対象外にする
+  {
+    id = "check-shebang-scripts-are-executable",
+    exclude = { glob = "**/*.rs" }
+  },
 ]
 
 # tombi: TOML のフォーマッタ・リンタ
@@ -35,9 +58,9 @@ hooks = [
 repo = "https://github.com/tombi-toml/tombi-pre-commit"
 rev = "v1.2.0"
 hooks = [
-  # Cargo.lock は cargo が独自に再生成するため対象外
-  { id = "tombi-lint", exclude = { glob = ["Cargo.lock"] } },
-  { id = "tombi-format", exclude = { glob = ["Cargo.lock"] } },
+  # Cargo.lock は自動生成ファイルなので tombi の対象外にする
+  { id = "tombi-lint", exclude = { glob = "**/Cargo.lock" } },
+  { id = "tombi-format", exclude = { glob = "**/Cargo.lock" } },
 ]
 
 # プロジェクト固有のローカルフック
@@ -45,7 +68,7 @@ hooks = [
 [[repos]]
 repo = "local"
 
-# cargo fmt: フォーマットチェック
+# --all でワークスペース全体を対象にし、--check で書き換えずに未フォーマットを検出だけする
 [[repos.hooks]]
 id = "cargo-fmt"
 name = "cargo fmt"
@@ -55,7 +78,7 @@ types = ["rust"]
 pass_filenames = false
 priority = 0
 
-# cargo clippy: リンタ
+# --workspace --all-targets でメンバ・テスト・example・ベンチも lint し、-D warnings で警告をエラーに昇格する
 [[repos.hooks]]
 id = "cargo-clippy"
 name = "cargo clippy"
