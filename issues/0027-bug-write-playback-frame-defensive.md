@@ -5,13 +5,13 @@
 - Completed: {YYYY-MM-DD}
 - Model: Qwen 3
 - Branch: feature/fix-write-playback-frame-defensive
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-07-21
 
 ## 目的
 
-`src/common.rs` の `write_playback_frame_to_buffer` に存在する 2 つの問題を修正する。
+`src/common.rs` の `write_playback_frame_to_buffer`（278-346 行目）に存在する 2 つの問題を修正する。
 
-1. `dst_channels == 0` のときゼロ除算で panic する
+1. `dst_channels == 0` のときゼロ除算で panic する（同一フォーマットパス 291 行目、変換パス 323・343 行目）
 2. 同一フォーマットパスと変換パスで部分フレームの扱いが不整合
 
 ## 優先度根拠
@@ -20,24 +20,41 @@
 
 ## 現状
 
-### ゼロ除算（src/common.rs:233-270）
+### ゼロ除算（src/common.rs:290-291, 323, 343）
+
+同一フォーマットパス（290-291 行目）:
 
 ```rust
 let sample_size = dst_channels * bytes_per_sample; // dst_channels == 0 → 0
 let copy_frames = copy_len / sample_size; // ゼロ除算 → panic
 ```
 
+変換パス（323 行目、343 行目）:
+
+```rust
+(copy_len as i32) / dst_channels as i32 // dst_channels == 0 → ゼロ除算 → panic
+```
+
 ### 部分フレーム不整合
 
-同一フォーマットパスは完全フレーム単位に切り詰めてコピーするが、F32↔S16 変換パスはサンプル単位で変換し、部分フレームのデータもバッファに書き込む。
+同一フォーマットパス（291-292 行目）は `copy_len / sample_size` で完全フレーム単位に切り詰めてコピーするが、F32↔S16 変換パス（299-344 行目）はサンプル単位で変換し、部分フレームのデータもバッファに書き込む。
+
+## 設計方針
+
+`dst_channels == 0` は不正入力として早期 return する。変換パスでもフレーム境界に切り詰めてから変換し、同一フォーマットパスと整合させる。
 
 ## 完了条件
 
 - `dst_channels == 0` の場合に 0 を返す
 - 変換パスでもフレーム境界に切り詰めてから変換する
+- `dst_channels == 0` と部分フレーム切り詰めの単体テストを `src/common.rs` 内の `#[cfg(test)]` モジュールに追加する
 - `cargo clippy` / `cargo test` が通る
 
 ## 解決方法
 
-1. 関数冒頭に `if dst_channels == 0 { return 0; }` を追加する
-2. 変換パスで `copy_len` を `copy_len - (copy_len % dst_channels)` に切り詰めてから変換する
+1. 関数冒頭に `if dst_channels == 0 { return 0; }` を追加する（291 行目と 323・343 行目のゼロ除算をまとめて防止する）
+2. 変換パス（F32→S16: 302-323 行目、S16→F32: 328-343 行目）で `copy_len` を `copy_len - (copy_len % dst_channels)` に切り詰めてから変換する（`copy_len` はサンプル数単位、`dst_channels` は 1 フレームあたりのサンプル数（チャネル数）なので、剰余で部分フレームを切り落とせる）
+
+## 後方互換
+
+`pub(crate)` の内部実装のみの変更であり、公開 API に影響なし。`dst_channels == 0` は現状 panic なので、0 返却への変更は破壊的ではない
