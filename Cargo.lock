@@ -467,7 +467,7 @@ dependencies = [
 
 [[package]]
 name = "shiguredo_audio_device"
-version = "2026.2.0-canary.2"
+version = "2026.2.0"
 dependencies = [
  "bindgen",
  "cc",

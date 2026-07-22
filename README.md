@@ -21,6 +21,12 @@ Please read <https://github.com/shiguredo/oss> before use.
 macOS / Linux / Windows に対応したオーディオデバイスライブラリです。
 音声キャプチャ (マイク入力) と音声再生 (スピーカー出力) を提供します。
 
+## 特徴
+
+- macOS / Linux / Windows で共通のキャプチャ / 再生 API
+- Linux では PulseAudio と PipeWire を同時に有効化し、実行時にバックエンドを選択可能
+- ランタイム依存クレートなし (システムライブラリのみ)
+
 ## 対応プラットフォーム
 
 - macOS: CoreAudio / AudioToolbox
@@ -36,7 +42,7 @@ macOS / Linux / Windows に対応したオーディオデバイスライブラ�
 - Windows: `wasapi` (`default-wasapi`)
 
 Linux では `pulse` と `pipewire` を同時に有効化できます。
-実行時に使うバックエンドは、`AudioDeviceList::enumerate_pulse()` / `AudioCapture::new_pipewire()` のように明示 API で選べます。
+実行時に使うバックエンドは、`AudioDeviceList::enumerate_pulse()` / `AudioCapture::new_pipewire()` / `AudioPlayback::new_pipewire()` のように明示 API で選べます。
 
 `default-*` feature はプラットフォームごとに 1 つだけ有効にしてください。
 `AudioDeviceList::enumerate()` や `AudioCapture::new()` / `AudioPlayback::new()` は、有効な `default-*` に対応するバックエンドを使います。
@@ -69,9 +75,10 @@ systemctl --user enable --now pipewire pipewire-pulse
 PipeWire バックエンド:
 
 ```bash
-sudo apt install libpipewire-0.3-dev
+sudo apt install libpipewire-0.3-dev pipewire-alsa
 ```
 
+`pipewire-alsa` がないと PipeWire が ALSA デバイスを認識しません。
 PipeWire デーモンが動作している必要があります。
 
 ```bash
@@ -79,6 +86,8 @@ systemctl --user enable --now pipewire
 ```
 
 両方を有効にする場合は、上記の開発パッケージをそれぞれインストールしてください。
+
+Linux で USB オーディオデバイスを認識させる手順は [docs/LINUX.md](docs/LINUX.md) を参照してください。
 
 ### Windows
 
