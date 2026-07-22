@@ -1,12 +1,33 @@
 //! Windows 用オーディオデバイス列挙 (WASAPI)
 
 use windows::{
-    Win32::Devices::FunctionDiscovery::*, Win32::Media::Audio::*,
-    Win32::System::Com::StructuredStorage::*, Win32::System::Com::*, Win32::System::Variant::*,
-    Win32::UI::Shell::PropertiesSystem::*, core::*,
+    Win32::Devices::FunctionDiscovery::*, Win32::Foundation::*, Win32::Media::Audio::*,
+    Win32::Media::KernelStreaming::*, Win32::Media::Multimedia::*, Win32::System::Com::*,
+    Win32::System::Variant::*, Win32::UI::Shell::PropertiesSystem::*, core::*,
 };
 
+use crate::common::{AudioDeviceType, AudioFormat};
 use crate::error::{Error, Result};
+
+/// Send でない型をスレッドに渡すためのラッパー（MTA で初期化済みのため安全）
+pub(crate) struct SendHandle(pub(crate) HANDLE);
+unsafe impl Send for SendHandle {}
+impl SendHandle {
+    pub(crate) fn into_inner(self) -> HANDLE {
+        self.0
+    }
+}
+
+pub(crate) struct SendPtr<T>(pub(crate) T);
+
+// Safety: COM オブジェクトは MTA (COINIT_MULTITHREADED) で初期化しており、
+// MTA オブジェクトはスレッド間で安全に移送できる。
+// 各具体型に対する unsafe impl Send は、利用側（capture_wasapi.rs, playback_wasapi.rs）で宣言する。
+impl<T> SendPtr<T> {
+    pub(crate) fn into_inner(self) -> T {
+        self.0
+    }
+}
 
 /// COM を MTA モードで初期化する。
 /// 既に MTA で初期化済み (S_FALSE) の場合は成功とする。
@@ -23,26 +44,8 @@ pub(crate) fn init_com_mta() -> Result<()> {
     }
 }
 
-/// オーディオデバイスの種類
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AudioDeviceType {
-    /// 入力デバイス（マイク）
-    Input,
-    /// 出力デバイス（スピーカー）
-    Output,
-}
-
-/// オーディオフォーマット
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AudioFormat {
-    /// Signed 16-bit integer
-    S16,
-    /// 32-bit float
-    F32,
-}
-
 /// オーディオデバイス
-pub struct AudioDevice {
+pub(crate) struct WasapiDeviceImpl {
     name: String,
     unique_id: String,
     channels: i32,
@@ -50,7 +53,7 @@ pub struct AudioDevice {
     device_type: AudioDeviceType,
 }
 
-impl AudioDevice {
+impl WasapiDeviceImpl {
     pub fn name(&self) -> Result<String> {
         Ok(self.name.clone())
     }
@@ -72,54 +75,23 @@ impl AudioDevice {
     }
 }
 
-unsafe impl Send for AudioDevice {}
-unsafe impl Sync for AudioDevice {}
-
 /// オーディオデバイスリスト
-pub struct AudioDeviceList {
-    devices: Vec<AudioDevice>,
+pub(crate) struct WasapiDeviceListImpl {
+    pub(crate) devices: Vec<WasapiDeviceImpl>,
 }
 
-impl AudioDeviceList {
-    /// 入力デバイス（マイク）を列挙する
-    ///
-    /// 既存の `enumerate()` と同等の動作
-    pub fn enumerate_input() -> Result<Self> {
-        let devices = enumerate_devices_by_type(AudioDeviceType::Input)?;
-        Ok(Self { devices })
-    }
-
-    /// 出力デバイス（スピーカー）を列挙する
-    pub fn enumerate_output() -> Result<Self> {
-        let devices = enumerate_devices_by_type(AudioDeviceType::Output)?;
-        Ok(Self { devices })
-    }
-
-    /// 全デバイス（入力・出力）を列挙する
-    pub fn enumerate() -> Result<Self> {
+impl WasapiDeviceListImpl {
+    pub fn enumerate(filter: Option<AudioDeviceType>) -> Result<Self> {
         let mut devices = enumerate_devices_by_type(AudioDeviceType::Input)?;
         devices.extend(enumerate_devices_by_type(AudioDeviceType::Output)?);
+        if let Some(f) = filter {
+            devices.retain(|d| d.device_type == f);
+        }
         Ok(Self { devices })
-    }
-
-    pub fn devices(&self) -> &[AudioDevice] {
-        &self.devices
-    }
-
-    pub fn len(&self) -> usize {
-        self.devices.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.devices.is_empty()
     }
 }
 
-unsafe impl Send for AudioDeviceList {}
-unsafe impl Sync for AudioDeviceList {}
-
-/// 指定されたタイプのデバイスを列挙
-fn enumerate_devices_by_type(device_type: AudioDeviceType) -> Result<Vec<AudioDevice>> {
+fn enumerate_devices_by_type(device_type: AudioDeviceType) -> Result<Vec<WasapiDeviceImpl>> {
     init_com_mta()?;
     unsafe {
         // デバイス列挙子を作成
@@ -143,19 +115,16 @@ fn enumerate_devices_by_type(device_type: AudioDeviceType) -> Result<Vec<AudioDe
             .map_err(|_| Error::DeviceAccessDenied)?;
 
         let mut devices = Vec::new();
-
         for i in 0..count {
             let device = match collection.Item(i) {
                 Ok(d) => d,
                 Err(_) => continue,
             };
-
             // デバイス ID を取得
             let device_id = match device.GetId() {
                 Ok(id) => id.to_string().unwrap_or_default(),
                 Err(_) => continue,
             };
-
             // デバイスプロパティを取得
             let props = device.OpenPropertyStore(STGM_READ);
             let name = if let Ok(props) = props {
@@ -163,11 +132,9 @@ fn enumerate_devices_by_type(device_type: AudioDeviceType) -> Result<Vec<AudioDe
             } else {
                 "Unknown Device".to_string()
             };
-
             // フォーマット情報を取得
             let (channels, sample_rate) = get_device_format(&device).unwrap_or((2, 48000));
-
-            devices.push(AudioDevice {
+            devices.push(WasapiDeviceImpl {
                 name,
                 unique_id: device_id,
                 channels,
@@ -175,7 +142,6 @@ fn enumerate_devices_by_type(device_type: AudioDeviceType) -> Result<Vec<AudioDe
                 device_type,
             });
         }
-
         Ok(devices)
     }
 }
@@ -183,20 +149,20 @@ fn enumerate_devices_by_type(device_type: AudioDeviceType) -> Result<Vec<AudioDe
 /// デバイス名を取得
 fn get_device_name(props: &IPropertyStore) -> Option<String> {
     unsafe {
-        let mut prop_value = props.GetValue(&PKEY_Device_FriendlyName).ok()?;
-
-        if prop_value.Anonymous.Anonymous.vt == VT_LPWSTR {
-            let pwsz = prop_value.Anonymous.Anonymous.Anonymous.pwszVal;
-            if !pwsz.is_null() {
-                let len = (0..).take_while(|&i| *pwsz.0.add(i) != 0).count();
-                let slice = std::slice::from_raw_parts(pwsz.0, len);
-                let name = String::from_utf16(slice).ok();
-                PropVariantClear(&mut prop_value).ok();
-                return name;
+        match props.GetValue(&PKEY_Device_FriendlyName as *const _ as *const _) {
+            Ok(pv) => {
+                if pv.Anonymous.Anonymous.vt == VARENUM(VT_LPWSTR.0) {
+                    let ptr = pv.Anonymous.Anonymous.Anonymous.pwszVal.0;
+                    if !ptr.is_null() {
+                        let len = (0..).take_while(|&i| *ptr.add(i) != 0).count();
+                        let slice = std::slice::from_raw_parts(ptr, len);
+                        return String::from_utf16(slice).ok();
+                    }
+                }
+                None
             }
+            Err(_) => None,
         }
-        PropVariantClear(&mut prop_value).ok();
-        None
     }
 }
 
@@ -204,16 +170,34 @@ fn get_device_name(props: &IPropertyStore) -> Option<String> {
 fn get_device_format(device: &IMMDevice) -> Option<(i32, i32)> {
     unsafe {
         let audio_client: IAudioClient = device.Activate(CLSCTX_ALL, None).ok()?;
-
         let mix_format = audio_client.GetMixFormat().ok()?;
-
         let channels = (*mix_format).nChannels as i32;
         let sample_rate = (*mix_format).nSamplesPerSec as i32;
-
         CoTaskMemFree(Some(mix_format as *const _));
-
         Some((channels, sample_rate))
     }
+}
+
+/// オーディオフォーマットを判定
+pub(crate) unsafe fn determine_audio_format(wave_format: *const WAVEFORMATEX) -> AudioFormat {
+    let format_tag = unsafe { (*wave_format).wFormatTag };
+
+    // WAVE_FORMAT_IEEE_FLOAT の場合は F32 と判定する
+    if format_tag == WAVE_FORMAT_IEEE_FLOAT as u16 {
+        return AudioFormat::F32;
+    }
+
+    // WAVE_FORMAT_EXTENSIBLE の場合は SubFormat GUID を確認する
+    if format_tag == WAVE_FORMAT_EXTENSIBLE as u16 {
+        let ext = wave_format as *const WAVEFORMATEXTENSIBLE;
+        let sub_format = unsafe { std::ptr::addr_of!((*ext).SubFormat).read_unaligned() };
+        if sub_format == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
+            return AudioFormat::F32;
+        }
+    }
+
+    // それ以外は全て S16 として扱う
+    AudioFormat::S16
 }
 
 /// デバイス ID からデバイスを取得
@@ -227,7 +211,6 @@ pub(crate) fn get_device_by_id(
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
                 .map_err(|_| Error::DeviceAccessDenied)?;
-
         if let Some(id) = device_id {
             // 指定されたデバイスを取得
             let wide_id: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();

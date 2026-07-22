@@ -1,4 +1,4 @@
-// PulseAudio を使った Linux 用オーディオキャプチャ実装
+// PulseAudio を使った Linux 用オーディオキャプチャ・再生実装
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -8,7 +8,7 @@
 
 #include <pulse/pulseaudio.h>
 
-#include "audio_c.h"
+#include "audio_pulse.h"
 
 // AudioDevice 構造体
 struct AudioDevice {
@@ -84,8 +84,19 @@ static void source_info_callback(pa_context* c, const pa_source_info* info,
 
     // description を表示名として使用する
     device->name = strdup(info->description ? info->description : info->name);
+    if (!device->name) {
+        free(device);
+        return;
+    }
+
     // PulseAudio の source name を一意識別子として使用する
     device->unique_id = strdup(info->name);
+    if (!device->unique_id) {
+        free(device->name);
+        free(device);
+        return;
+    }
+
     device->channels =
         info->sample_spec.channels > 0 ? info->sample_spec.channels : 1;
     device->sample_rate =
@@ -134,7 +145,18 @@ static void sink_info_callback(pa_context* c, const pa_sink_info* info,
     }
 
     device->name = strdup(info->description ? info->description : info->name);
+    if (!device->name) {
+        free(device);
+        return;
+    }
+
     device->unique_id = strdup(info->name);
+    if (!device->unique_id) {
+        free(device->name);
+        free(device);
+        return;
+    }
+
     device->channels =
         info->sample_spec.channels > 0 ? info->sample_spec.channels : 2;
     device->sample_rate =
@@ -155,7 +177,7 @@ static void enumerate_state_callback(pa_context* c, void* userdata) {
 }
 
 // デバイス列挙
-int audio_enumerate_devices(struct AudioDevice*** devices, int* count) {
+int audio_pulse_enumerate_devices(struct AudioDevice*** devices, int* count) {
     if (!devices || !count) {
         return -1;
     }
@@ -215,6 +237,10 @@ int audio_enumerate_devices(struct AudioDevice*** devices, int* count) {
 
     // source 列挙が完了するまで待機する
     while (enum_ctx.done < 1) {
+        pa_context_state_t state = pa_context_get_state(context);
+        if (state == PA_CONTEXT_FAILED || state == PA_CONTEXT_TERMINATED) {
+            break;
+        }
         if (pa_mainloop_iterate(mainloop, 1, &ret) < 0) {
             break;
         }
@@ -236,6 +262,10 @@ int audio_enumerate_devices(struct AudioDevice*** devices, int* count) {
 
     // sink 列挙が完了するまで待機する
     while (enum_ctx.done < 2) {
+        pa_context_state_t state = pa_context_get_state(context);
+        if (state == PA_CONTEXT_FAILED || state == PA_CONTEXT_TERMINATED) {
+            break;
+        }
         if (pa_mainloop_iterate(mainloop, 1, &ret) < 0) {
             break;
         }
@@ -251,7 +281,7 @@ int audio_enumerate_devices(struct AudioDevice*** devices, int* count) {
     return 0;
 }
 
-void audio_free_devices(struct AudioDevice** devices, int count) {
+void audio_pulse_free_devices(struct AudioDevice** devices, int count) {
     if (!devices) {
         return;
     }
@@ -266,35 +296,35 @@ void audio_free_devices(struct AudioDevice** devices, int count) {
     free(devices);
 }
 
-const char* audio_device_name(struct AudioDevice* device) {
+const char* audio_pulse_device_name(struct AudioDevice* device) {
     if (!device) {
         return NULL;
     }
     return device->name;
 }
 
-const char* audio_device_unique_id(struct AudioDevice* device) {
+const char* audio_pulse_device_unique_id(struct AudioDevice* device) {
     if (!device) {
         return NULL;
     }
     return device->unique_id;
 }
 
-int audio_device_channels(struct AudioDevice* device) {
+int audio_pulse_device_channels(struct AudioDevice* device) {
     if (!device) {
         return 0;
     }
     return device->channels;
 }
 
-int audio_device_sample_rate(struct AudioDevice* device) {
+int audio_pulse_device_sample_rate(struct AudioDevice* device) {
     if (!device) {
         return 0;
     }
     return device->sample_rate;
 }
 
-int audio_device_type(struct AudioDevice* device) {
+int audio_pulse_device_type(struct AudioDevice* device) {
     if (!device) {
         return AUDIO_DEVICE_TYPE_INPUT;
     }
@@ -368,7 +398,7 @@ static void stream_state_callback(pa_stream* s, void* userdata) {
     }
 }
 
-struct AudioSession* audio_session_create(const char* device_id, int sample_rate,
+struct AudioSession* audio_pulse_session_create(const char* device_id, int sample_rate,
                                           int channels) {
     struct AudioSession* session = calloc(1, sizeof(struct AudioSession));
     if (!session) {
@@ -411,13 +441,13 @@ struct AudioSession* audio_session_create(const char* device_id, int sample_rate
     return session;
 }
 
-void audio_session_destroy(struct AudioSession* session) {
+void audio_pulse_session_destroy(struct AudioSession* session) {
     if (!session) {
         return;
     }
 
     if (atomic_load(&session->running)) {
-        audio_session_stop(session);
+        audio_pulse_session_stop(session);
     }
 
     if (session->stream) {
@@ -437,7 +467,7 @@ void audio_session_destroy(struct AudioSession* session) {
     free(session);
 }
 
-int audio_session_start(struct AudioSession* session,
+int audio_pulse_session_start(struct AudioSession* session,
                         AudioFrameCallback callback,
                         void* user_data) {
     if (!session || !callback) {
@@ -526,7 +556,7 @@ int audio_session_start(struct AudioSession* session,
     return 0;
 }
 
-void audio_session_stop(struct AudioSession* session) {
+void audio_pulse_session_stop(struct AudioSession* session) {
     if (!session || !atomic_load(&session->running)) {
         return;
     }
@@ -546,14 +576,298 @@ void audio_session_stop(struct AudioSession* session) {
     pa_threaded_mainloop_stop(session->mainloop);
 }
 
-int audio_session_sample_rate(struct AudioSession* session) {
+int audio_pulse_session_sample_rate(struct AudioSession* session) {
     if (!session) {
         return 0;
     }
     return session->sample_rate;
 }
 
-int audio_session_channels(struct AudioSession* session) {
+int audio_pulse_session_channels(struct AudioSession* session) {
+    if (!session) {
+        return 0;
+    }
+    return session->channels;
+}
+
+// --- 再生 (Playback) 実装 ---
+
+struct PlaybackSession {
+    pa_threaded_mainloop* mainloop;
+    pa_context* context;
+    pa_stream* stream;
+    char* device_id;
+    AudioPlaybackCallback callback;
+    void* user_data;
+    int sample_rate;
+    int channels;
+    atomic_int running;
+};
+
+// PulseAudio 接続状態コールバック（再生セッション用）
+static void playback_state_callback(pa_context* c, void* userdata) {
+    struct PlaybackSession* session = userdata;
+    pa_context_state_t state = pa_context_get_state(c);
+
+    switch (state) {
+        case PA_CONTEXT_READY:
+        case PA_CONTEXT_FAILED:
+        case PA_CONTEXT_TERMINATED:
+            pa_threaded_mainloop_signal(session->mainloop, 0);
+            break;
+        default:
+            break;
+    }
+}
+
+// 再生ストリーム書き込みコールバック
+static void stream_write_callback(pa_stream* s, size_t nbytes, void* userdata) {
+    struct PlaybackSession* session = userdata;
+
+    if (nbytes == 0) {
+        return;
+    }
+
+    void* buf;
+    size_t len = nbytes;
+
+    if (pa_stream_begin_write(s, &buf, &len) < 0 || !buf) {
+        return;
+    }
+
+    if (!atomic_load(&session->running) || !session->callback) {
+        // 無音を書き込む
+        memset(buf, 0, len);
+        pa_stream_write(s, buf, len, NULL, 0, PA_SEEK_RELATIVE);
+        return;
+    }
+
+    int bytes_per_sample = 2;  // S16
+    int frame_size = bytes_per_sample * session->channels;
+    int frames = (int)(len / frame_size);
+
+    if (frames <= 0) {
+        memset(buf, 0, len);
+        pa_stream_write(s, buf, len, NULL, 0, PA_SEEK_RELATIVE);
+        return;
+    }
+
+    int written = session->callback(session->user_data, buf, frames,
+                                     session->channels, session->sample_rate,
+                                     AUDIO_FORMAT_S16);
+
+    if (written <= 0) {
+        memset(buf, 0, len);
+    }
+    // written > 0 の場合は Rust 側の共通変換関数がバッファ末尾をゼロ埋めしている
+
+    pa_stream_write(s, buf, len, NULL, 0, PA_SEEK_RELATIVE);
+}
+
+// 再生ストリーム状態コールバック
+static void playback_stream_state_callback(pa_stream* s, void* userdata) {
+    struct PlaybackSession* session = userdata;
+    pa_stream_state_t state = pa_stream_get_state(s);
+
+    switch (state) {
+        case PA_STREAM_READY:
+        case PA_STREAM_FAILED:
+        case PA_STREAM_TERMINATED:
+            pa_threaded_mainloop_signal(session->mainloop, 0);
+            break;
+        default:
+            break;
+    }
+}
+
+struct PlaybackSession* audio_pulse_playback_session_create(const char* device_id,
+                                                            int sample_rate,
+                                                            int channels) {
+    struct PlaybackSession* session = calloc(1, sizeof(struct PlaybackSession));
+    if (!session) {
+        return NULL;
+    }
+
+    // デフォルト値の設定
+    if (sample_rate <= 0) {
+        sample_rate = 48000;
+    }
+    if (channels <= 0) {
+        channels = 2;
+    }
+
+    session->sample_rate = sample_rate;
+    session->channels = channels;
+    session->device_id = device_id ? strdup(device_id) : NULL;
+    atomic_init(&session->running, 0);
+
+    // threaded mainloop を作成する
+    session->mainloop = pa_threaded_mainloop_new();
+    if (!session->mainloop) {
+        free(session->device_id);
+        free(session);
+        return NULL;
+    }
+
+    pa_mainloop_api* api = pa_threaded_mainloop_get_api(session->mainloop);
+    session->context = pa_context_new(api, "shiguredo-audio-playback");
+    if (!session->context) {
+        pa_threaded_mainloop_free(session->mainloop);
+        free(session->device_id);
+        free(session);
+        return NULL;
+    }
+
+    pa_context_set_state_callback(session->context, playback_state_callback,
+                                  session);
+
+    return session;
+}
+
+void audio_pulse_playback_session_destroy(struct PlaybackSession* session) {
+    if (!session) {
+        return;
+    }
+
+    if (atomic_load(&session->running)) {
+        audio_pulse_playback_session_stop(session);
+    }
+
+    if (session->stream) {
+        pa_stream_unref(session->stream);
+    }
+
+    if (session->context) {
+        pa_context_disconnect(session->context);
+        pa_context_unref(session->context);
+    }
+
+    if (session->mainloop) {
+        pa_threaded_mainloop_free(session->mainloop);
+    }
+
+    free(session->device_id);
+    free(session);
+}
+
+int audio_pulse_playback_session_start(struct PlaybackSession* session,
+                                       AudioPlaybackCallback callback,
+                                       void* user_data) {
+    if (!session || !callback) {
+        return -1;
+    }
+
+    if (atomic_load(&session->running)) {
+        return 0;
+    }
+
+    session->callback = callback;
+    session->user_data = user_data;
+
+    // threaded mainloop を開始する
+    if (pa_threaded_mainloop_start(session->mainloop) < 0) {
+        return -2;
+    }
+
+    pa_threaded_mainloop_lock(session->mainloop);
+
+    // PulseAudio に接続する
+    if (pa_context_connect(session->context, NULL, PA_CONTEXT_NOFLAGS, NULL) <
+        0) {
+        pa_threaded_mainloop_unlock(session->mainloop);
+        pa_threaded_mainloop_stop(session->mainloop);
+        return -3;
+    }
+
+    // 接続が完了するまで待機する
+    while (pa_context_get_state(session->context) != PA_CONTEXT_READY) {
+        pa_context_state_t state = pa_context_get_state(session->context);
+        if (state == PA_CONTEXT_FAILED || state == PA_CONTEXT_TERMINATED) {
+            pa_threaded_mainloop_unlock(session->mainloop);
+            pa_threaded_mainloop_stop(session->mainloop);
+            return -3;
+        }
+        pa_threaded_mainloop_wait(session->mainloop);
+    }
+
+    // 再生ストリームを作成する
+    pa_sample_spec sample_spec = {
+        .format = PA_SAMPLE_S16LE,
+        .rate = session->sample_rate,
+        .channels = session->channels,
+    };
+
+    session->stream =
+        pa_stream_new(session->context, "audio-playback", &sample_spec, NULL);
+    if (!session->stream) {
+        pa_threaded_mainloop_unlock(session->mainloop);
+        pa_threaded_mainloop_stop(session->mainloop);
+        return -4;
+    }
+
+    pa_stream_set_state_callback(session->stream,
+                                 playback_stream_state_callback, session);
+    pa_stream_set_write_callback(session->stream, stream_write_callback,
+                                 session);
+
+    // 再生ストリームを接続する
+    // device_id が NULL の場合はデフォルトシンクを使用する
+    if (pa_stream_connect_playback(session->stream, session->device_id, NULL,
+                                   PA_STREAM_ADJUST_LATENCY, NULL, NULL) < 0) {
+        pa_stream_unref(session->stream);
+        session->stream = NULL;
+        pa_threaded_mainloop_unlock(session->mainloop);
+        pa_threaded_mainloop_stop(session->mainloop);
+        return -5;
+    }
+
+    // ストリームが準備完了するまで待機する
+    while (pa_stream_get_state(session->stream) != PA_STREAM_READY) {
+        pa_stream_state_t state = pa_stream_get_state(session->stream);
+        if (state == PA_STREAM_FAILED || state == PA_STREAM_TERMINATED) {
+            pa_stream_unref(session->stream);
+            session->stream = NULL;
+            pa_threaded_mainloop_unlock(session->mainloop);
+            pa_threaded_mainloop_stop(session->mainloop);
+            return -5;
+        }
+        pa_threaded_mainloop_wait(session->mainloop);
+    }
+
+    atomic_store(&session->running, 1);
+    pa_threaded_mainloop_unlock(session->mainloop);
+
+    return 0;
+}
+
+void audio_pulse_playback_session_stop(struct PlaybackSession* session) {
+    if (!session || !atomic_load(&session->running)) {
+        return;
+    }
+
+    atomic_store(&session->running, 0);
+
+    pa_threaded_mainloop_lock(session->mainloop);
+
+    if (session->stream) {
+        pa_stream_disconnect(session->stream);
+        pa_stream_unref(session->stream);
+        session->stream = NULL;
+    }
+
+    pa_threaded_mainloop_unlock(session->mainloop);
+
+    pa_threaded_mainloop_stop(session->mainloop);
+}
+
+int audio_pulse_playback_session_sample_rate(struct PlaybackSession* session) {
+    if (!session) {
+        return 0;
+    }
+    return session->sample_rate;
+}
+
+int audio_pulse_playback_session_channels(struct PlaybackSession* session) {
     if (!session) {
         return 0;
     }

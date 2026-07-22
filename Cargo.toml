@@ -1,47 +1,75 @@
 [package]
 name = "shiguredo_audio_device"
-version = "2026.1.0"
+version = "2026.2.0"
 edition = "2024"
 rust-version = "1.88"
-authors = ["Shiguredo Inc."]
-license = "Apache-2.0"
 description = "Cross-platform audio device library"
+readme = "README.md"
 homepage = "https://github.com/shiguredo/audio-device-rs"
 repository = "https://github.com/shiguredo/audio-device-rs"
-readme = "README.md"
+license = "Apache-2.0"
 build = "build.rs"
-include = ["/src/**", "/build.rs", "/LICENSE", "/README.md"]
-
-[dependencies]
-
-[target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = [
-    "Win32_Devices_FunctionDiscovery",
-    "Win32_Foundation",
-    "Win32_Media_Audio",
-    "Win32_Media_KernelStreaming",
-    "Win32_Media_Multimedia",
-    "Win32_Security",
-    "Win32_System_Com",
-    "Win32_System_Com_StructuredStorage",
-    "Win32_System_Performance",
-    "Win32_System_Threading",
-    "Win32_System_Variant",
-    "Win32_UI_Shell_PropertiesSystem",
-] }
-
-[features]
-default = ["pulse"]
-pulse = []
-pipewire = []
+include = ["/LICENSE", "/README.md", "/build.rs", "/src/**"]
 
 [workspace]
-members = [".", "pbt"]
+members = ["fuzz", "pbt"]
+
+# 依存を最小化する方針のため、ランタイム依存は持たない
+[dependencies]
 
 [dev-dependencies]
+# 依存ゼロの軽量 JSON パーサ／シリアライザ。テスト用途で利用
 nojson = "0.3"
 
 [build-dependencies]
+# C/C++ ヘッダから Rust の FFI バインディングを自動生成する
 bindgen = "0.72"
-cc = "1"
+# build.rs から C/C++ コードをコンパイルしてリンクするためのヘルパ
+cc = "1.2"
+# Linux などで pkg-config を介してシステムライブラリ (PulseAudio 等) を検出する
 pkg-config = "0.3"
+
+[target."cfg(windows)".dependencies]
+# Microsoft 公式の Win32 API バインディング。必要な機能だけを feature で有効化する
+windows = {
+  version = "0.62",
+  default-features = false,
+  features = [
+    # オーディオデバイス列挙に使う Function Discovery API
+    "Win32_Devices_FunctionDiscovery",
+    # HRESULT・HANDLE・BOOL などの Win32 基本型
+    "Win32_Foundation",
+    # WASAPI など Windows のオーディオ関連 API
+    "Win32_Media_Audio",
+    # KSPROPERTY などカーネルストリーミング関連の定義
+    "Win32_Media_KernelStreaming",
+    # WAVEFORMATEX などマルチメディアの共通構造体・定数
+    "Win32_Media_Multimedia",
+    # セキュリティ記述子・アクセストークンなどのセキュリティ関連 API
+    "Win32_Security",
+    # COM の初期化・インターフェース呼び出し基盤
+    "Win32_System_Com",
+    # PROPVARIANT など構造化ストレージで使うプロパティ型
+    "Win32_System_Com_StructuredStorage",
+    # QueryPerformanceCounter など高精度パフォーマンスカウンタ
+    "Win32_System_Performance",
+    # スレッド・イベント・ハンドル待機などの同期プリミティブ
+    "Win32_System_Threading",
+    # VARIANT 型を扱うためのオートメーション系定義
+    "Win32_System_Variant",
+    # PKEY_Device_FriendlyName 等のプロパティキー定義
+    "Win32_UI_Shell_PropertiesSystem",
+  ],
+  optional = true
+}
+
+[features]
+default = ["default-coreaudio", "default-pulse", "default-wasapi"]
+coreaudio = []
+default-coreaudio = ["coreaudio"]
+default-pipewire = ["pipewire"]
+default-pulse = ["pulse"]
+default-wasapi = ["wasapi"]
+pipewire = []
+pulse = []
+wasapi = ["dep:windows"]

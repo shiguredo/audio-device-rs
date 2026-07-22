@@ -1,38 +1,43 @@
 //! shiguredo_audio_device - macOS/Linux/Windows 対応のオーディオライブラリ
 //!
-//! このクレートは macOS、Linux (PipeWire)、Windows (WASAPI) をサポートしています。
+//! このクレートは macOS、Linux (PulseAudio/PipeWire)、Windows (WASAPI) をサポートしています。
 //! 音声キャプチャ（マイク入力）と音声再生（スピーカー出力）の機能を提供します。
 
+mod common;
 mod error;
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire, enable_wasapi))]
 mod capture;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire, enable_wasapi))]
 mod device;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-mod ffi;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire, enable_wasapi))]
 mod playback;
 
-#[cfg(target_os = "windows")]
-mod capture_windows;
-#[cfg(target_os = "windows")]
-mod device_windows;
-#[cfg(target_os = "windows")]
-mod playback_windows;
+#[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
+mod capture_ffi;
+#[cfg(enable_wasapi)]
+mod capture_wasapi;
+#[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
+mod device_ffi;
+#[cfg(enable_wasapi)]
+mod device_wasapi;
+#[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
+mod ffi;
+#[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
+mod playback_ffi;
+#[cfg(enable_wasapi)]
+mod playback_wasapi;
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use capture::{AudioCapture, AudioCaptureConfig, AudioFrame, AudioFrameOwned};
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use device::{AudioDevice, AudioDeviceList, AudioDeviceType, AudioFormat};
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use playback::{AudioPlayback, AudioPlaybackConfig, PlaybackFrame};
+pub use common::{
+    AudioCaptureConfig, AudioDeviceType, AudioFormat, AudioFrame, AudioFrameOwned,
+    AudioPlaybackConfig, PlaybackFrame,
+};
 
-#[cfg(target_os = "windows")]
-pub use capture_windows::{AudioCapture, AudioCaptureConfig, AudioFrame, AudioFrameOwned};
-#[cfg(target_os = "windows")]
-pub use device_windows::{AudioDevice, AudioDeviceList, AudioDeviceType, AudioFormat};
-#[cfg(target_os = "windows")]
-pub use playback_windows::{AudioPlayback, AudioPlaybackConfig, PlaybackFrame};
+#[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire, enable_wasapi))]
+pub use capture::AudioCapture;
+#[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire, enable_wasapi))]
+pub use device::{AudioDevice, AudioDeviceList};
+#[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire, enable_wasapi))]
+pub use playback::AudioPlayback;
 
 pub use error::{Error, Result};

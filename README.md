@@ -19,6 +19,13 @@ Please read <https://github.com/shiguredo/oss> before use.
 ## 概要
 
 macOS / Linux / Windows に対応したオーディオデバイスライブラリです。
+音声キャプチャ (マイク入力) と音声再生 (スピーカー出力) を提供します。
+
+## 特徴
+
+- macOS / Linux / Windows で共通のキャプチャ / 再生 API
+- Linux では PulseAudio と PipeWire を同時に有効化し、実行時にバックエンドを選択可能
+- ランタイム依存クレートなし (システムライブラリのみ)
 
 ## 対応プラットフォーム
 
@@ -26,11 +33,25 @@ macOS / Linux / Windows に対応したオーディオデバイスライブラ�
 - Linux: PulseAudio (デフォルト) / PipeWire
 - Windows: WASAPI
 
-## Linux の feature
+## feature
 
-Linux では `pulse` (デフォルト) と `pipewire` の 2 つの feature を選択できます。両方を同時に指定することはできません。
+デフォルト feature は次のとおりです。
+
+- macOS: `coreaudio` (`default-coreaudio`)
+- Linux: `pulse` (`default-pulse`)
+- Windows: `wasapi` (`default-wasapi`)
+
+Linux では `pulse` と `pipewire` を同時に有効化できます。
+実行時に使うバックエンドは、`AudioDeviceList::enumerate_pulse()` / `AudioCapture::new_pipewire()` / `AudioPlayback::new_pipewire()` のように明示 API で選べます。
+
+`default-*` feature はプラットフォームごとに 1 つだけ有効にしてください。
+`AudioDeviceList::enumerate()` や `AudioCapture::new()` / `AudioPlayback::new()` は、有効な `default-*` に対応するバックエンドを使います。
 
 ## ビルド要件
+
+### 共通
+
+- Rust 1.88 以降
 
 ### macOS
 
@@ -54,14 +75,19 @@ systemctl --user enable --now pipewire pipewire-pulse
 PipeWire バックエンド:
 
 ```bash
-sudo apt install libpipewire-0.3-dev
+sudo apt install libpipewire-0.3-dev pipewire-alsa
 ```
 
+`pipewire-alsa` がないと PipeWire が ALSA デバイスを認識しません。
 PipeWire デーモンが動作している必要があります。
 
 ```bash
 systemctl --user enable --now pipewire
 ```
+
+両方を有効にする場合は、上記の開発パッケージをそれぞれインストールしてください。
+
+Linux で USB オーディオデバイスを認識させる手順は [docs/LINUX.md](docs/LINUX.md) を参照してください。
 
 ### Windows
 
@@ -70,11 +96,14 @@ systemctl --user enable --now pipewire
 ## ビルド
 
 ```bash
-# デフォルト (macOS / Linux PulseAudio / Windows)
+# デフォルト (macOS CoreAudio / Linux PulseAudio / Windows WASAPI)
 cargo build -p shiguredo_audio_device
 
-# Linux PipeWire バックエンド
-cargo build -p shiguredo_audio_device --no-default-features --features pipewire
+# Linux: PipeWire をデフォルトバックエンドにする
+cargo build -p shiguredo_audio_device --no-default-features --features pipewire,default-pipewire
+
+# Linux: PulseAudio と PipeWire を共存させ、デフォルトは PulseAudio のままにする
+cargo build -p shiguredo_audio_device --features pipewire
 ```
 
 ## 使い方
@@ -84,9 +113,9 @@ cargo build -p shiguredo_audio_device --no-default-features --features pipewire
 ```rust
 use shiguredo_audio_device::{AudioDeviceList, AudioDeviceType};
 
-// 全デバイス（入力・出力）を取得
+// 全デバイス (入力 / 出力) を取得
 let device_list = AudioDeviceList::enumerate()?;
-for device in device_list.devices() {
+for device in &device_list {
     let device_type = match device.device_type() {
         AudioDeviceType::Input => "入力",
         AudioDeviceType::Output => "出力",
@@ -106,6 +135,13 @@ let input_devices = AudioDeviceList::enumerate_input()?;
 
 // 出力デバイスのみ取得
 let output_devices = AudioDeviceList::enumerate_output()?;
+```
+
+Linux で複数バックエンドを有効にしている場合は、明示 API も使えます。
+
+```rust
+let pulse_devices = AudioDeviceList::enumerate_pulse()?;
+let pipewire_devices = AudioDeviceList::enumerate_pipewire()?;
 ```
 
 ### キャプチャ
@@ -136,6 +172,47 @@ capture.start()?;
 
 // キャプチャ停止
 capture.stop();
+```
+
+### 再生
+
+```rust
+use shiguredo_audio_device::{AudioPlayback, AudioPlaybackConfig, PlaybackFrame};
+
+let config = AudioPlaybackConfig {
+    device_id: None, // デフォルトデバイスを使用
+    sample_rate: 48000,
+    channels: 2,
+};
+
+// コールバックは (要求フレーム数, チャンネル数, サンプルレート) を受け取り、
+// PlaybackFrame を返す。None を返すと無音になる
+let mut playback = AudioPlayback::new(config, |frames, channels, sample_rate| {
+    let total = (frames * channels) as usize;
+    let samples = vec![0i16; total]; // ここで PCM を生成する
+    PlaybackFrame::from_s16(&samples, channels, sample_rate).ok()
+})?;
+
+playback.start()?;
+
+// ... 再生中 ...
+
+playback.stop();
+```
+
+## サンプル
+
+`examples/` 以下に実行可能なサンプルがあります。
+
+```bash
+# デバイス一覧を JSON で出力する
+cargo run --example device_list
+
+# デバイスごとの詳細情報を JSON で出力する
+cargo run --example device_info
+
+# デフォルト出力デバイスに 440Hz のサイン波を再生する
+cargo run --example playback_sine
 ```
 
 ## ライセンス

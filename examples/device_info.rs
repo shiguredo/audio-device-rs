@@ -6,7 +6,7 @@ fn main() {
     let device_list = match AudioDeviceList::enumerate() {
         Ok(list) => list,
         Err(e) => {
-            eprintln!("デバイスの列挙に失敗しました: {e}");
+            eprintln!("Failed to enumerate devices: {e}");
             std::process::exit(1);
         }
     };
@@ -16,7 +16,7 @@ fn main() {
     let mut sample_rates: BTreeSet<i32> = BTreeSet::new();
     let mut channel_counts: BTreeSet<i32> = BTreeSet::new();
 
-    for device in device_list.devices() {
+    for device in &device_list {
         match device.device_type() {
             AudioDeviceType::Input => input_count += 1,
             AudioDeviceType::Output => output_count += 1,
@@ -32,7 +32,7 @@ fn main() {
             f.member(
                 "devices",
                 nojson::array(|f| {
-                    for device in device_list.devices() {
+                    for device in &device_list {
                         let name = device.name().unwrap_or_default();
                         let unique_id = device.unique_id().unwrap_or_default();
                         let device_type = match device.device_type() {

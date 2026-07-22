@@ -1,0 +1,34 @@
+[package]
+name = "shiguredo_audio_device-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[[bin]]
+doc = false
+name = "audio_frame_as_s16"
+path = "fuzz_targets/audio_frame_as_s16.rs"
+test = false
+
+[[bin]]
+doc = false
+name = "playback_frame_from_s16"
+path = "fuzz_targets/playback_frame_from_s16.rs"
+test = false
+
+[[bin]]
+doc = false
+name = "playback_frame_from_f32"
+path = "fuzz_targets/playback_frame_from_f32.rs"
+test = false
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+libfuzzer-sys = "0.4"
+
+[dependencies.shiguredo_audio_device]
+path = ".."
+default-features = false
