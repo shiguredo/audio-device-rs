@@ -51,7 +51,7 @@ Linux では `pulse` と `pipewire` を同時に有効化できます。
 
 ### 共通
 
-- Rust 1.88 以降
+- Rust 1.93 以降
 
 ### macOS
 

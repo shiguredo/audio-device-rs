@@ -2,7 +2,7 @@
 name = "shiguredo_audio_device"
 version = "2026.2.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.93"
 description = "Cross-platform audio device library"
 readme = "README.md"
 homepage = "https://github.com/shiguredo/audio-device-rs"
