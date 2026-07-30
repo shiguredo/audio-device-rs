@@ -11,6 +11,12 @@
 
 ## develop
 
+## 2026.3.0
+
+**リリース日**: 2026-07-30
+
+- [CHANGE] MSRV (rust-version) を 1.93 に上げる
+  - @voluntas
 
 ## 2026.2.0
 
