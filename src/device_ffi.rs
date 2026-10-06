@@ -201,11 +201,13 @@ mod tests {
     #[test]
     fn device_type_from_ffi_known_values() {
         assert_eq!(
-            AudioDeviceType::from_ffi(ffi::AUDIO_DEVICE_TYPE_INPUT as i32).unwrap(),
+            AudioDeviceType::from_ffi(ffi::AUDIO_DEVICE_TYPE_INPUT as i32)
+                .expect("INPUT 定数は既知の値"),
             AudioDeviceType::Input
         );
         assert_eq!(
-            AudioDeviceType::from_ffi(ffi::AUDIO_DEVICE_TYPE_OUTPUT as i32).unwrap(),
+            AudioDeviceType::from_ffi(ffi::AUDIO_DEVICE_TYPE_OUTPUT as i32)
+                .expect("OUTPUT 定数は既知の値"),
             AudioDeviceType::Output
         );
     }
@@ -221,11 +223,11 @@ mod tests {
     #[test]
     fn audio_format_from_ffi_known_values() {
         assert_eq!(
-            AudioFormat::from_ffi(ffi::AUDIO_FORMAT_S16 as i32).unwrap(),
+            AudioFormat::from_ffi(ffi::AUDIO_FORMAT_S16 as i32).expect("S16 定数は既知の値"),
             AudioFormat::S16
         );
         assert_eq!(
-            AudioFormat::from_ffi(ffi::AUDIO_FORMAT_F32 as i32).unwrap(),
+            AudioFormat::from_ffi(ffi::AUDIO_FORMAT_F32 as i32).expect("F32 定数は既知の値"),
             AudioFormat::F32
         );
     }

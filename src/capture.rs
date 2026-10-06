@@ -56,6 +56,7 @@ impl AudioCapture {
     // CoreAudio 明示関数
     // -----------------------------------------------------------------------
 
+    /// CoreAudio でキャプチャを構築する。
     #[cfg(enable_coreaudio)]
     pub fn new_coreaudio<F>(config: AudioCaptureConfig, callback: F) -> Result<Self>
     where
@@ -70,6 +71,7 @@ impl AudioCapture {
     // PulseAudio 明示関数
     // -----------------------------------------------------------------------
 
+    /// PulseAudio でキャプチャを構築する。
     #[cfg(enable_pulse)]
     pub fn new_pulse<F>(config: AudioCaptureConfig, callback: F) -> Result<Self>
     where
@@ -84,6 +86,7 @@ impl AudioCapture {
     // PipeWire 明示関数
     // -----------------------------------------------------------------------
 
+    /// PipeWire でキャプチャを構築する。
     #[cfg(enable_pipewire)]
     pub fn new_pipewire<F>(config: AudioCaptureConfig, callback: F) -> Result<Self>
     where
@@ -98,6 +101,7 @@ impl AudioCapture {
     // WASAPI 明示関数
     // -----------------------------------------------------------------------
 
+    /// WASAPI でキャプチャを構築する。
     #[cfg(enable_wasapi)]
     pub fn new_wasapi<F>(config: AudioCaptureConfig, callback: F) -> Result<Self>
     where

@@ -34,11 +34,12 @@ jobs:
     steps:
       - name: Checkout sources
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - run: rustup update stable
+      # rust-toolchain.toml に固定した MSRV のツールチェーンを導入する
+      - run: rustup show
       - uses: shiguredo/github-actions/.github/actions/rust-cache@main
         with:
           os: ${{ matrix.os }}
-          toolchain: stable
+          toolchain: "1.93"
       - name: Install Linux dependencies (pulse)
         if: runner.os == 'Linux' && !contains(matrix.cargo-flags, 'pipewire')
         run: sudo apt-get update && sudo apt-get install -y libpulse-dev libclang-dev
@@ -77,7 +78,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: cmd
         run: echo %USERPROFILE%\.cargo\bin>> "%GITHUB_PATH%"
-      - run: rustup update stable
+      # rust-toolchain.toml に固定した MSRV のツールチェーンを導入する
+      - run: rustup show
       - run: cargo test --workspace
       - name: Run device_list
         run: >

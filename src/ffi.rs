@@ -1,7 +1,7 @@
-#![allow(non_upper_case_globals)]
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
-#![allow(dead_code)]
+//! C / Objective-C バックエンドの FFI バインディング。
+//!
+//! `build.rs` が `bindgen` で生成したバインディングを `include!` で取り込む。
+//! バックエンドごとに読み込むファイルを分けている。
 
 #[cfg(enable_coreaudio)]
 include!(concat!(env!("OUT_DIR"), "/bindings_coreaudio.rs"));

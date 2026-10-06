@@ -1,6 +1,12 @@
-use shiguredo_audio_device::AudioDeviceList;
+//! 全てのオーディオデバイスを JSON で出力するサンプル。
+//!
+//! オーディオバックエンド (coreaudio / pulse / pipewire / wasapi) のいずれかが
+//! 有効な場合に動作する。
 
+#[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire, enable_wasapi))]
 fn main() {
+    use shiguredo_audio_device::AudioDeviceList;
+
     let device_list = match AudioDeviceList::enumerate() {
         Ok(list) => list,
         Err(e) => {
@@ -39,4 +45,15 @@ fn main() {
     });
 
     println!("{output}");
+}
+
+/// オーディオバックエンドが 1 つも有効でない場合はエラー終了する
+///
+/// `--no-default-features` のみでビルドした場合にこの main が選ばれる。
+#[cfg(not(any(enable_coreaudio, enable_pulse, enable_pipewire, enable_wasapi)))]
+fn main() {
+    eprintln!(
+        "No audio backend feature is enabled. Enable one of coreaudio, pulse, pipewire, or wasapi."
+    );
+    std::process::exit(1);
 }

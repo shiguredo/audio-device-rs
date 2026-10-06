@@ -176,6 +176,7 @@ impl AudioDeviceList {
     // CoreAudio 明示関数
     // -----------------------------------------------------------------------
 
+    /// CoreAudio で全デバイスを列挙する。
     #[cfg(enable_coreaudio)]
     pub fn enumerate_coreaudio() -> Result<Self> {
         let inner = FfiDeviceListImpl::enumerate_coreaudio(None)?;
@@ -190,6 +191,7 @@ impl AudioDeviceList {
         }))
     }
 
+    /// CoreAudio で入力デバイスを列挙する。
     #[cfg(enable_coreaudio)]
     pub fn enumerate_input_coreaudio() -> Result<Self> {
         let inner = FfiDeviceListImpl::enumerate_coreaudio(Some(AudioDeviceType::Input))?;
@@ -204,6 +206,7 @@ impl AudioDeviceList {
         }))
     }
 
+    /// CoreAudio で出力デバイスを列挙する。
     #[cfg(enable_coreaudio)]
     pub fn enumerate_output_coreaudio() -> Result<Self> {
         let inner = FfiDeviceListImpl::enumerate_coreaudio(Some(AudioDeviceType::Output))?;
@@ -222,6 +225,7 @@ impl AudioDeviceList {
     // PulseAudio 明示関数
     // -----------------------------------------------------------------------
 
+    /// PulseAudio で全デバイスを列挙する。
     #[cfg(enable_pulse)]
     pub fn enumerate_pulse() -> Result<Self> {
         let inner = FfiDeviceListImpl::enumerate_pulse(None)?;
@@ -236,6 +240,7 @@ impl AudioDeviceList {
         }))
     }
 
+    /// PulseAudio で入力デバイスを列挙する。
     #[cfg(enable_pulse)]
     pub fn enumerate_input_pulse() -> Result<Self> {
         let inner = FfiDeviceListImpl::enumerate_pulse(Some(AudioDeviceType::Input))?;
@@ -250,6 +255,7 @@ impl AudioDeviceList {
         }))
     }
 
+    /// PulseAudio で出力デバイスを列挙する。
     #[cfg(enable_pulse)]
     pub fn enumerate_output_pulse() -> Result<Self> {
         let inner = FfiDeviceListImpl::enumerate_pulse(Some(AudioDeviceType::Output))?;
@@ -268,6 +274,7 @@ impl AudioDeviceList {
     // PipeWire 明示関数
     // -----------------------------------------------------------------------
 
+    /// PipeWire で全デバイスを列挙する。
     #[cfg(enable_pipewire)]
     pub fn enumerate_pipewire() -> Result<Self> {
         let inner = FfiDeviceListImpl::enumerate_pipewire(None)?;
@@ -282,6 +289,7 @@ impl AudioDeviceList {
         }))
     }
 
+    /// PipeWire で入力デバイスを列挙する。
     #[cfg(enable_pipewire)]
     pub fn enumerate_input_pipewire() -> Result<Self> {
         let inner = FfiDeviceListImpl::enumerate_pipewire(Some(AudioDeviceType::Input))?;
@@ -296,6 +304,7 @@ impl AudioDeviceList {
         }))
     }
 
+    /// PipeWire で出力デバイスを列挙する。
     #[cfg(enable_pipewire)]
     pub fn enumerate_output_pipewire() -> Result<Self> {
         let inner = FfiDeviceListImpl::enumerate_pipewire(Some(AudioDeviceType::Output))?;
@@ -314,6 +323,7 @@ impl AudioDeviceList {
     // WASAPI 明示関数
     // -----------------------------------------------------------------------
 
+    /// WASAPI で全デバイスを列挙する。
     #[cfg(enable_wasapi)]
     pub fn enumerate_wasapi() -> Result<Self> {
         let mut inner = WasapiDeviceListImpl::enumerate(None)?;
@@ -328,6 +338,7 @@ impl AudioDeviceList {
         }))
     }
 
+    /// WASAPI で入力デバイスを列挙する。
     #[cfg(enable_wasapi)]
     pub fn enumerate_input_wasapi() -> Result<Self> {
         let mut inner = WasapiDeviceListImpl::enumerate(Some(AudioDeviceType::Input))?;
@@ -342,6 +353,7 @@ impl AudioDeviceList {
         }))
     }
 
+    /// WASAPI で出力デバイスを列挙する。
     #[cfg(enable_wasapi)]
     pub fn enumerate_output_wasapi() -> Result<Self> {
         let mut inner = WasapiDeviceListImpl::enumerate(Some(AudioDeviceType::Output))?;
