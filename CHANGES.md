@@ -19,6 +19,8 @@
 
 ### misc
 
+- [ADD] `write_playback_frame_to_buffer` の直接テストを追加する
+  - @voluntas
 - [UPDATE] PBT をプロパティベーステストフレームワーク noprop に移行する
   - @voluntas
 - [UPDATE] shiguredo-rust 規約に準拠する

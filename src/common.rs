@@ -349,3 +349,129 @@ pub(crate) fn write_playback_frame_to_buffer(
         }
     }
 }
+
+#[cfg(all(
+    test,
+    any(enable_coreaudio, enable_pulse, enable_pipewire, enable_wasapi)
+))]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // 同一フォーマット (S16 → S16 / F32 → F32)
+    // -----------------------------------------------------------------------
+
+    /// 空の src_data では書き込みフレーム数 0 でバッファ全体がゼロ埋めされる
+    #[test]
+    fn empty_src_data_fills_dst_with_zero() {
+        let mut dst = vec![0xCCu8; 60];
+        let frames =
+            write_playback_frame_to_buffer(&[], AudioFormat::S16, &mut dst, AudioFormat::S16, 2);
+        assert_eq!(frames, 0);
+        assert!(
+            dst.iter().all(|&b| b == 0),
+            "バッファ全体がゼロ埋めされること"
+        );
+    }
+
+    /// 変換後のフレーム数が dst_channels で割り切れない場合は切り捨てる
+    #[test]
+    fn f32_to_s16_truncates_partial_frame() {
+        // 3ch 分の F32 データ 7 サンプル (2 フレーム + 1 サンプル)
+        let src: Vec<f32> = vec![0.0, 0.25, -0.25, 0.5, -0.5, 1.0, -1.0];
+        let src_bytes: Vec<u8> = src.iter().flat_map(|f| f.to_le_bytes()).collect();
+        // 3ch 分の S16 バッファ (7 サンプルぶん)
+        let mut dst = vec![0xCCu8; 14];
+        let frames = write_playback_frame_to_buffer(
+            &src_bytes,
+            AudioFormat::F32,
+            &mut dst,
+            AudioFormat::S16,
+            3,
+        );
+        assert_eq!(frames, 2, "7 / 3 = 2 フレームに切り捨てられること");
+        // 先頭 2 サンプルだけ検証する (3 サンプル目はフレームに満たない)
+        let written0 = i16::from_le_bytes([dst[0], dst[1]]);
+        let written1 = i16::from_le_bytes([dst[2], dst[3]]);
+        assert_eq!(written0, 0);
+        assert_eq!(written1, 8191);
+    }
+
+    /// F32 → F32 の同一フォーマットで不足分がゼロ埋めされる
+    #[test]
+    fn same_format_f32_pads_with_silence() {
+        // 2ch で 2 フレームぶんのデータ
+        let src: Vec<f32> = vec![0.5, -0.5, 0.25, -0.25];
+        let src_bytes: Vec<u8> = src.iter().flat_map(|f| f.to_le_bytes()).collect();
+        // 2ch で 3 フレームぶんのバッファ
+        let mut dst = vec![0xCCu8; 24];
+        let frames = write_playback_frame_to_buffer(
+            &src_bytes,
+            AudioFormat::F32,
+            &mut dst,
+            AudioFormat::F32,
+            2,
+        );
+        assert_eq!(frames, 2, "データぶんの 2 フレームが書き込まれること");
+        // 書き込まれた部分は元データと一致する
+        assert_eq!(&dst[..src_bytes.len()], &src_bytes[..]);
+        // 残りはゼロ埋めされる
+        assert!(
+            dst[src_bytes.len()..].iter().all(|&b| b == 0),
+            "不足分がゼロ埋めされること"
+        );
+    }
+
+    /// S16 → F32 のマルチチャンネル変換で全サンプルが変換される
+    #[test]
+    fn s16_to_f32_converts_multichannel() {
+        // 2ch で 2 フレームぶんのデータ
+        let src: Vec<i16> = vec![32767, -32768, 16384, -16384];
+        let src_bytes: Vec<u8> = src.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let mut dst = vec![0u8; 16];
+        let frames = write_playback_frame_to_buffer(
+            &src_bytes,
+            AudioFormat::S16,
+            &mut dst,
+            AudioFormat::F32,
+            2,
+        );
+        assert_eq!(frames, 2, "2 フレームが書き込まれること");
+        for (i, exp) in [32767.0f32 / 32768.0, -1.0, 0.5, -0.5].iter().enumerate() {
+            let offset = i * 4;
+            let written = f32::from_le_bytes([
+                dst[offset],
+                dst[offset + 1],
+                dst[offset + 2],
+                dst[offset + 3],
+            ]);
+            assert!(
+                (written - exp).abs() < 1e-7,
+                "サンプル {i}: 期待 {exp}, 実際 {written}"
+            );
+        }
+    }
+
+    /// F32 → S16 変換で NaN と ±Inf が期待どおりに扱われる
+    #[test]
+    fn f32_to_s16_handles_nan_and_infinity() {
+        let src: Vec<f32> = vec![f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0];
+        let src_bytes: Vec<u8> = src.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let mut dst = vec![0u8; 8];
+        let frames = write_playback_frame_to_buffer(
+            &src_bytes,
+            AudioFormat::F32,
+            &mut dst,
+            AudioFormat::S16,
+            1,
+        );
+        assert_eq!(frames, 4);
+        // NaN → 0, +Inf → clamp で 32767, -Inf → clamp で -32767, 0.0 → 0
+        let expected: [i16; 4] = [0, 32767, -32767, 0];
+        for (i, exp) in expected.iter().enumerate() {
+            let offset = i * 2;
+            let written = i16::from_le_bytes([dst[offset], dst[offset + 1]]);
+            assert_eq!(written, *exp, "サンプル {i} が一致しない");
+        }
+    }
+}
