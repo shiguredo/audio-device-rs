@@ -16,6 +16,8 @@
 
 ### misc
 
+- [UPDATE] PBT をプロパティベーステストフレームワーク noprop に移行する
+  - @voluntas
 - [UPDATE] `rust-toolchain.toml` のツールチェーンを MSRV (1.93) に固定する
   - @voluntas
 - [UPDATE] 依存クレートのバージョン指定をマイナーバージョンまでに揃え、用途コメントを追加する

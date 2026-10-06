@@ -2,8 +2,11 @@
 name = "pbt"
 version = "0.0.0"
 edition = "2024"
+rust-version = "1.93"
 publish = false
 
 [dev-dependencies]
-proptest = "1"
+# Property-Based Testing フレームワーク
+noprop = "0.2"
+# PBT 対象となる公開 API
 shiguredo_audio_device = { path = "..", default-features = false }
