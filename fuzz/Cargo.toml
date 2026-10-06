@@ -2,6 +2,7 @@
 name = "shiguredo_audio_device-fuzz"
 version = "0.0.0"
 edition = "2024"
+rust-version = "1.93"
 publish = false
 
 [package.metadata]
@@ -26,9 +27,12 @@ path = "fuzz_targets/playback_frame_from_f32.rs"
 test = false
 
 [dependencies]
-arbitrary = { version = "1", features = ["derive"] }
+# 任意バイト列を構造体へ変換する derive マクロ
+arbitrary = { version = "1.4", features = ["derive"] }
+# libFuzzer を用いたカバレッジ誘導型 Fuzzing のランタイム
 libfuzzer-sys = "0.4"
 
+# Fuzzing 対象となる公開 API
 [dependencies.shiguredo_audio_device]
 path = ".."
 default-features = false
