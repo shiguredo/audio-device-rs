@@ -294,7 +294,7 @@ checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 
 [[package]]
 name = "shiguredo_audio_device"
-version = "2026.3.0"
+version = "2026.4.0-canary.0"
 dependencies = [
  "bindgen",
  "cc",
