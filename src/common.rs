@@ -17,9 +17,9 @@ pub enum AudioDeviceType {
 /// オーディオフォーマット
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioFormat {
-    /// Signed 16-bit integer
+    /// 符号付き 16-bit 整数
     S16,
-    /// 32-bit float
+    /// 32-bit 浮動小数点数
     F32,
 }
 
@@ -36,9 +36,10 @@ impl AudioDeviceType {
     }
 }
 
+#[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire, enable_wasapi))]
 impl AudioFormat {
     /// 1 サンプルあたりのバイト数を返す
-    pub(crate) fn bytes_per_sample(&self) -> usize {
+    pub(crate) fn bytes_per_sample(self) -> usize {
         match self {
             AudioFormat::S16 => 2,
             AudioFormat::F32 => 4,
@@ -176,8 +177,11 @@ impl AudioFrameOwned {
 
 /// オーディオキャプチャ設定
 pub struct AudioCaptureConfig {
+    /// デバイス ID（None の場合はデフォルトデバイス）
     pub device_id: Option<String>,
+    /// サンプルレート
     pub sample_rate: i32,
+    /// チャンネル数
     pub channels: i32,
 }
 
@@ -275,6 +279,7 @@ impl Default for AudioPlaybackConfig {
 /// フォーマットが一致する場合はそのままコピー、異なる場合は変換する。
 /// バッファに満たない部分はゼロで埋める。
 /// 書き込んだフレーム数を返す。
+#[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire, enable_wasapi))]
 pub(crate) fn write_playback_frame_to_buffer(
     src_data: &[u8],
     src_format: AudioFormat,

@@ -70,7 +70,7 @@ impl WasapiCaptureImpl {
             CoTaskMemFree(Some(mix_format as *const _));
 
             // オーディオクライアントを初期化（10ms バッファ）
-            let buffer_duration: i64 = 100_000; // 10ms in 100-nanosecond units
+            let buffer_duration: i64 = 100_000; // 100 ナノ秒単位で 10ms を指定する
             audio_client
                 .Initialize(
                     AUDCLNT_SHAREMODE_SHARED,

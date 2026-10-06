@@ -3,6 +3,8 @@
 //! このクレートは macOS、Linux (PulseAudio/PipeWire)、Windows (WASAPI) をサポートしています。
 //! 音声キャプチャ（マイク入力）と音声再生（スピーカー出力）の機能を提供します。
 
+#![warn(missing_docs)]
+
 mod common;
 mod error;
 

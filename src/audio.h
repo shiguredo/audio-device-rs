@@ -12,8 +12,8 @@ struct AudioSession;
 struct PlaybackSession;
 
 // オーディオフォーマット定数
-#define AUDIO_FORMAT_S16 0  // signed 16-bit integer
-#define AUDIO_FORMAT_F32 1  // 32-bit float
+#define AUDIO_FORMAT_S16 0  // 符号付き 16-bit 整数
+#define AUDIO_FORMAT_F32 1  // 32-bit 浮動小数点数
 
 // デバイスタイプ定数
 #define AUDIO_DEVICE_TYPE_INPUT  0  // 入力デバイス（マイク）

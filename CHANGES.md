@@ -11,15 +11,18 @@
 
 ## develop
 
+- [FIX] `Cargo.toml` の `windows` 依存を MSRV 1.93 の cargo が解釈できる形式に修正する
+  - @voluntas
 - [FIX] examples が `--no-default-features` でビルドできない問題を修正する
   - オーディオバックエンドが有効でない場合はエラーメッセージを表示して終了する
-  - @voluntas
-- [FIX] `Cargo.toml` の `windows` 依存を MSRV 1.93 の cargo が解釈できる形式に修正する
   - @voluntas
 
 ### misc
 
 - [UPDATE] PBT をプロパティベーステストフレームワーク noprop に移行する
+  - @voluntas
+- [UPDATE] shiguredo-rust 規約に準拠する
+  - 公開 API のドキュメント追加、`Error` への `Copy` 実装、不要な lint 抑制の削除、`.unwrap()` から `.expect()` への置き換えなど
   - @voluntas
 - [UPDATE] `rust-toolchain.toml` のツールチェーンを MSRV (1.93) に固定する
   - @voluntas
