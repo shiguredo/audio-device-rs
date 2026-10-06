@@ -11,6 +11,9 @@
 
 ## develop
 
+- [FIX] examples が `--no-default-features` でビルドできない問題を修正する
+  - オーディオバックエンドが有効でない場合はエラーメッセージを表示して終了する
+  - @voluntas
 - [FIX] `Cargo.toml` の `windows` 依存を MSRV 1.93 の cargo が解釈できる形式に修正する
   - @voluntas
 
