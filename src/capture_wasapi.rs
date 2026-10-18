@@ -11,7 +11,7 @@ use windows::{
 };
 
 use crate::common::{AudioCaptureConfig, AudioDeviceType, AudioFormat, AudioFrame};
-use crate::device_wasapi::{SendHandle, SendPtr, get_device_by_id};
+use crate::device_wasapi::{ComGuard, SendHandle, SendPtr, get_device_by_id};
 use crate::error::{Error, Result};
 
 pub(crate) struct WasapiCaptureContext {
@@ -153,6 +153,7 @@ impl WasapiCaptureImpl {
         let handle = thread::Builder::new()
             .name("audio-capture".to_string())
             .spawn(move || {
+                let _com_guard = ComGuard::init_mta();
                 capture_thread_func(
                     capture_client.into_inner(),
                     event_handle.into_inner(),
@@ -225,6 +226,8 @@ impl Drop for WasapiCaptureImpl {
     }
 }
 
+// Safety: COM オブジェクトは MTA (COINIT_MULTITHREADED) で初期化しており、
+// MTA オブジェクトはスレッド間で安全に移送できる。
 unsafe impl Send for WasapiCaptureImpl {}
 unsafe impl Sync for WasapiCaptureImpl {}
 
@@ -238,10 +241,6 @@ fn capture_thread_func(
     context: Arc<WasapiCaptureContext>,
 ) {
     unsafe {
-        // ワーカースレッドの COM 参照カウント追加。
-        // MTA はプロセス全体で共有されるため、呼び出し元で検証済みなら失敗しない。
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-
         // タイムスタンプ用のパフォーマンスカウンタ
         let mut frequency = 0i64;
         let _ = QueryPerformanceFrequency(&mut frequency);
@@ -322,7 +321,6 @@ fn capture_thread_func(
                 let _ = capture_client.ReleaseBuffer(frames_available);
             }
         }
-        CoUninitialize();
     }
 }
 

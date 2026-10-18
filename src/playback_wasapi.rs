@@ -13,7 +13,7 @@ use crate::common::{
     AudioDeviceType, AudioFormat, AudioPlaybackConfig, PlaybackFrame,
     write_playback_frame_to_buffer,
 };
-use crate::device_wasapi::{SendHandle, SendPtr, get_device_by_id};
+use crate::device_wasapi::{ComGuard, SendHandle, SendPtr, get_device_by_id};
 use crate::error::{Error, Result};
 
 pub(crate) struct PlaybackContext {
@@ -171,6 +171,7 @@ impl WasapiPlaybackImpl {
         let handle = thread::Builder::new()
             .name("audio-playback".to_string())
             .spawn(move || {
+                let _com_guard = ComGuard::init_mta();
                 playback_thread_func(
                     render_client.into_inner(),
                     audio_client.into_inner(),
@@ -249,6 +250,8 @@ impl Drop for WasapiPlaybackImpl {
     }
 }
 
+// Safety: COM オブジェクトは MTA (COINIT_MULTITHREADED) で初期化しており、
+// MTA オブジェクトはスレッド間で安全に移送できる。
 unsafe impl Send for WasapiPlaybackImpl {}
 
 /// 再生スレッド関数
@@ -263,12 +266,6 @@ fn playback_thread_func(
     buffer_frames: u32,
     context: Arc<PlaybackContext>,
 ) {
-    // COM を MTA で初期化する。
-    // 呼び出し元で検証済みなら失敗しない。
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-    }
-
     // running フラグが false になるまでループする
     while context.running.load(Ordering::Acquire) {
         // バッファに空きができるまでイベントを待機する
@@ -333,9 +330,5 @@ fn playback_thread_func(
                     .ReleaseBuffer(frames_available, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32);
             }
         }
-    }
-
-    unsafe {
-        CoUninitialize();
     }
 }
