@@ -24,6 +24,8 @@
   - @melpon
 - [FIX] WASAPI で COM の初期化カウンタが解放されない問題を修正する
   - @melpon
+- [FIX] WASAPI 再生で `GetBuffer` 失敗時にコールバックが取得したフレームデータが破棄される問題を修正する
+  - @melpon
 
 ### misc
 

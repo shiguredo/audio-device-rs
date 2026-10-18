@@ -287,14 +287,14 @@ fn playback_thread_func(
             continue;
         }
 
-        // ユーザーコールバックからフレームデータを取得する
-        let frame_opt = (context.callback)(frames_available as i32, channels, sample_rate);
-
         // レンダリングバッファを取得する
         let data_ptr = match unsafe { render_client.GetBuffer(frames_available) } {
             Ok(p) => p,
             Err(_) => continue,
         };
+
+        // ユーザーコールバックからフレームデータを取得する
+        let frame_opt = (context.callback)(frames_available as i32, channels, sample_rate);
 
         if let Some(frame) = frame_opt {
             // フレームデータをバッファに変換して書き込む
