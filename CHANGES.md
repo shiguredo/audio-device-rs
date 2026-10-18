@@ -16,6 +16,8 @@
 - [FIX] examples が `--no-default-features` でビルドできない問題を修正する
   - オーディオバックエンドが有効でない場合はエラーメッセージを表示して終了する
   - @voluntas
+- [FIX] WASAPI キャプチャのタイムスタンプ計算で i64 オーバーフローが発生する問題を修正する
+  - @melpon
 
 ### misc
 
