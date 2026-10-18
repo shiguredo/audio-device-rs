@@ -1,5 +1,7 @@
 //! Windows 用オーディオデバイス列挙 (WASAPI)
 
+use std::marker::PhantomData;
+
 use windows::{
     Win32::Devices::FunctionDiscovery::*, Win32::Foundation::*, Win32::Media::Audio::*,
     Win32::Media::KernelStreaming::*, Win32::Media::Multimedia::*, Win32::System::Com::*,
@@ -29,18 +31,55 @@ impl<T> SendPtr<T> {
     }
 }
 
-/// COM を MTA モードで初期化する。
-/// 既に MTA で初期化済み (S_FALSE) の場合は成功とする。
-/// 呼び出し元スレッドが STA で初期化済みの場合は RPC_E_CHANGED_MODE が返るため、
-/// エラーとして報告する。
-pub(crate) fn init_com_mta() -> Result<()> {
-    unsafe {
-        let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
-        if hr.is_ok() {
-            Ok(())
-        } else {
-            Err(Error::ComInitFailed)
+/// 呼び出し元スレッドの COM 初期化 (MTA への参加) に対応する RAII ガード。
+pub(crate) struct ComGuard {
+    /// このガードを `!Send` / `!Sync` にするためのマーカー。値は保持しない。
+    _not_send: PhantomData<*const ()>,
+}
+
+impl ComGuard {
+    /// COM を MTA モードで初期化し、初期化カウンタを解放するガードを返す。
+    ///
+    /// 既に MTA で初期化済み (S_FALSE) の場合も成功とし、その場合も `CoInitializeEx` が
+    /// カウンタを 1 増やすため、返されたガードを drop する必要がある。
+    /// 呼び出し元スレッドが STA で初期化済みの場合は RPC_E_CHANGED_MODE が返るため、
+    /// エラーとして報告する。
+    pub(crate) fn init_mta() -> Result<Self> {
+        // Safety: CoInitializeEx は成功時にスレッドの COM 初期化カウンタを 1 増やす。
+        // その解放は返したガードの drop で行う。
+        unsafe {
+            let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
+            if hr.is_ok() {
+                Ok(Self {
+                    _not_send: PhantomData,
+                })
+            } else {
+                Err(Error::ComInitFailed)
+            }
         }
+    }
+}
+
+impl Drop for ComGuard {
+    fn drop(&mut self) {
+        // Safety: このガードは CoInitializeEx が成功したときにだけ生成される。
+        // !Send なので生成したスレッド以外では drop されず、ここで呼ぶ CoUninitialize は
+        // 対応する CoInitializeEx と同じスレッドになる。
+        unsafe {
+            CoUninitialize();
+        }
+    }
+}
+
+/// COM の呼び出しエラーをクレートのエラーに変換する。
+///
+/// 呼び出し元スレッドが COM を初期化していない場合は、原因が分かるように
+/// `ComInitFailed` にする。
+fn map_com_error(error: &windows::core::Error, fallback: Error) -> Error {
+    if error.code() == CO_E_NOTINITIALIZED {
+        Error::ComInitFailed
+    } else {
+        fallback
     }
 }
 
@@ -92,12 +131,11 @@ impl WasapiDeviceListImpl {
 }
 
 fn enumerate_devices_by_type(device_type: AudioDeviceType) -> Result<Vec<WasapiDeviceImpl>> {
-    init_com_mta()?;
     unsafe {
         // デバイス列挙子を作成
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-                .map_err(|_| Error::DeviceAccessDenied)?;
+                .map_err(|e| map_com_error(&e, Error::DeviceAccessDenied))?;
 
         // デバイスタイプに応じてデータフローを選択
         let data_flow = match device_type {
@@ -200,17 +238,16 @@ pub(crate) unsafe fn determine_audio_format(wave_format: *const WAVEFORMATEX) ->
     AudioFormat::S16
 }
 
-/// デバイス ID からデバイスを取得
+/// デバイス ID からデバイスを取得する。
 pub(crate) fn get_device_by_id(
     device_id: Option<&str>,
     device_type: AudioDeviceType,
 ) -> Result<IMMDevice> {
-    init_com_mta()?;
     unsafe {
         // デバイス列挙子を作成
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-                .map_err(|_| Error::DeviceAccessDenied)?;
+                .map_err(|e| map_com_error(&e, Error::DeviceAccessDenied))?;
         if let Some(id) = device_id {
             // 指定されたデバイスを取得
             let wide_id: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
@@ -228,5 +265,71 @@ pub(crate) fn get_device_by_id(
                 .GetDefaultAudioEndpoint(data_flow, eConsole)
                 .map_err(|_| Error::DeviceNotFound)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 呼び出し元スレッドの COM 初期化カウンタが 0 であることを検証する。
+    ///
+    /// カウンタが 0 なら `CoInitializeEx` は新規初期化になって S_OK を返す。
+    /// 0 でなければ S_FALSE が返るため、カウンタが解放されていないことを検出できる。
+    fn assert_com_initialization_count_is_zero() {
+        unsafe {
+            let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
+            assert_eq!(
+                hr, S_OK,
+                "COM 初期化カウンタが 0 に戻っていれば新規初期化になり S_OK が返ること"
+            );
+            // 検証のために増やしたカウンタを解放する。
+            CoUninitialize();
+        }
+    }
+
+    /// `ComGuard::init_mta` が返すガードを drop すると、スレッドの COM 初期化カウンタが
+    /// 初期化前の状態に戻ること。
+    #[test]
+    fn com_guard_decrements_thread_initialization_count() {
+        // テストスレッドは COM 未初期化の状態で始まるため、最初の初期化は S_OK になる。
+        let guard =
+            ComGuard::init_mta().expect("テストスレッドで COM を MTA モードで初期化できること");
+
+        unsafe {
+            // ガードを保持している間はスレッドが既に MTA で初期化済みなので S_FALSE が返る。
+            // この呼び出しでもカウンタが 1 増えるため、ここで対応する CoUninitialize を呼ぶ。
+            let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
+            assert_eq!(
+                hr, S_FALSE,
+                "ガードを保持している間はスレッドが MTA で初期化済みとして扱われること"
+            );
+            CoUninitialize();
+        }
+
+        // ガードを drop すると、ComGuard::init_mta が増やしたカウンタが 1 減る。
+        drop(guard);
+        assert_com_initialization_count_is_zero();
+    }
+
+    /// デバイス列挙が呼び出し元スレッドの COM 初期化を必要とすること。
+    #[test]
+    fn enumerate_devices_requires_thread_initialization() {
+        // 初期化していないスレッドでは COM が使えないため、列挙は ComInitFailed で失敗する。
+        assert!(
+            matches!(
+                WasapiDeviceListImpl::enumerate(None),
+                Err(Error::ComInitFailed)
+            ),
+            "COM を初期化していないスレッドでは列挙が ComInitFailed で失敗すること"
+        );
+
+        // 初期化している間は列挙でき、ガードを drop するとカウンタが元に戻る。
+        // デバイスの有無によって列挙の成否は変わるため、結果は破棄する。
+        let guard = crate::initialize_thread()
+            .expect("テストスレッドで COM を MTA モードで初期化できること");
+        let _ = WasapiDeviceListImpl::enumerate(None);
+        drop(guard);
+        assert_com_initialization_count_is_zero();
     }
 }

@@ -11,6 +11,8 @@
 
 ## develop
 
+- [CHANGE] Windows ではライブラリを利用するスレッドの先頭で `initialize_thread()` を呼ぶ必要があるようにする
+  - @melpon
 - [FIX] `Cargo.toml` の `windows` 依存を MSRV 1.93 の cargo が解釈できる形式に修正する
   - @voluntas
 - [FIX] examples が `--no-default-features` でビルドできない問題を修正する
@@ -19,6 +21,8 @@
 - [FIX] WASAPI キャプチャのタイムスタンプ計算で i64 オーバーフローが発生する問題を修正する
   - @melpon
 - [FIX] WASAPI キャプチャの Use-After-Free と、スレッド生成失敗時に running フラグが残る問題を修正する
+  - @melpon
+- [FIX] WASAPI で COM の初期化カウンタが解放されない問題を修正する
   - @melpon
 
 ### misc
