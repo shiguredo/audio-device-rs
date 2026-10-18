@@ -2,7 +2,7 @@
 
 - Priority: High
 - Created: 2026-07-20
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-19
 - Model: Qwen 3
 - Branch: feature/fix-capture-wasapi-uaf-and-running-flag
 - Polished: 2026-07-21
@@ -93,6 +93,8 @@ let handle = thread::Builder::new()
 3. `start()` の `spawn` 失敗時のエラーパスに `context.running.store(false, Ordering::Release)` を追加する（`audio_client.Stop()` の前に挿入。`playback_wasapi.rs:186` と同じ順序）。手順 2 のシャドウイング解除が未適用だと `context` が move 済みでコンパイルできないため、手順 2 を先に適用すること
 4. `start()` の `spawn` 失敗時のエラー型を `Error::SessionCreateFailed` から `Error::SessionStartFailed` に変更する
 5. 139 行目のコメントを「スレッド生成前に running フラグを立てる」に修正する（`playback_wasapi.rs:164` と同一文案）
+
+上記 1〜5 を適用し、`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo clippy --target x86_64-pc-windows-msvc`、`cargo test --workspace` がすべて通ることを確認した。
 
 ## 後方互換
 
