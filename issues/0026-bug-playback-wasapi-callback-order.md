@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-20
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-19
 - Model: Qwen 3
 - Branch: feature/fix-playback-wasapi-callback-order
 - Polished: 2026-07-21
@@ -44,13 +44,14 @@ let data_ptr = match unsafe { render_client.GetBuffer(frames_available) } {
 
 ## 解決方法
 
-`playback_thread_func`（293-335 行目）のコールバックと `GetBuffer` の呼び出し順序を入れ替える:
+`src/playback_wasapi.rs` の `playback_thread_func` で、レンダリングバッファの取得とユーザーコールバックの呼び出し順序を入れ替えた。
 
-1. 297-300 行目の `GetBuffer` を 294 行目のコールバックより前に移動する
-2. `GetBuffer` 失敗時は既存通り `continue`（コールバックがまだ呼ばれていないため副作用なし）
-3. `GetBuffer` 成功後にコールバックを呼ぶ
-4. コールバックが `None` を返した場合 → 既存の `ReleaseBuffer(frames_available, AUDCLNT_BUFFERFLAGS_SILENT)` パス（329-335 行目）にそのまま流れる
-5. コールバックが `Some(frame)` を返した場合 → `write_playback_frame_to_buffer` → `ReleaseBuffer(frames_available, 0)`
+- `GetBuffer` を先に呼び、バッファの確保に成功してからコールバックを呼ぶようにした
+- `GetBuffer` が失敗した場合はコールバックを呼ばずに `continue` するため、コールバックの副作用によるデータ損失は発生しない
+- コールバックが `None` を返した場合は `ReleaseBuffer(frames_available, AUDCLNT_BUFFERFLAGS_SILENT)` で無音を書き込み、`Some(frame)` を返した場合は `write_playback_frame_to_buffer` で書き込んでから `ReleaseBuffer(frames_available, 0)` で解放する。この分岐構造は変更していない
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追記した
+
+`cargo fmt --all --check`、`cargo clippy --target x86_64-pc-windows-msvc --workspace -- -D warnings`、`cargo test --workspace` がすべてパスすることを確認した。WASAPI 固有の順序ロジックはテストでは検証できないため、コードレビューで担保する。
 
 ## 後方互換
 
