@@ -108,10 +108,19 @@ cargo build -p shiguredo_audio_device --features pipewire
 
 ## 使い方
 
+ライブラリを使うすべてのスレッドの先頭で `initialize_thread()` を呼び、返り値をスレッドの終了まで保持してください。
+Windows では COM を MTA モードで初期化します。macOS / Linux では何もしません。
+
+```rust
+let _guard = shiguredo_audio_device::initialize_thread()?;
+```
+
 ### デバイス列挙
 
 ```rust
 use shiguredo_audio_device::{AudioDeviceList, AudioDeviceType};
+
+let _guard = shiguredo_audio_device::initialize_thread()?;
 
 // 全デバイス (入力 / 出力) を取得
 let device_list = AudioDeviceList::enumerate()?;
@@ -149,6 +158,8 @@ let pipewire_devices = AudioDeviceList::enumerate_pipewire()?;
 ```rust
 use shiguredo_audio_device::{AudioCapture, AudioCaptureConfig};
 
+let _guard = shiguredo_audio_device::initialize_thread()?;
+
 // キャプチャ設定
 let config = AudioCaptureConfig {
     device_id: None, // デフォルトデバイスを使用
@@ -178,6 +189,8 @@ capture.stop();
 
 ```rust
 use shiguredo_audio_device::{AudioPlayback, AudioPlaybackConfig, PlaybackFrame};
+
+let _guard = shiguredo_audio_device::initialize_thread()?;
 
 let config = AudioPlaybackConfig {
     device_id: None, // デフォルトデバイスを使用

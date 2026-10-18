@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-20
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-19
 - Model: Qwen 3
 - Branch: feature/fix-device-wasapi-com-ref-leak
 - Polished: 2026-07-21
@@ -64,12 +64,16 @@ pub(crate) fn init_com_mta() -> Result<()> {
 
 ## 解決方法
 
-1. `device_wasapi.rs` に RAII ガード `ComGuard` を追加する。`Drop` で `unsafe { CoUninitialize() }` を呼ぶ。`CoUninitialize` は `CoInitializeEx` を呼んだのと同じスレッドで呼ぶ必要があるため、`ComGuard` は `PhantomData<*const ()>` を持たせて `!Send` とする（スレッドアフィニティの文書化）
-2. `init_com_mta()` の戻り値を `Result<()>` から `Result<ComGuard>` に変更する
-3. `enumerate_devices_by_type`（95 行目）では `let _com = init_com_mta()?;` のようにガードを関数内で束縛する。全 COM オブジェクトが関数内で完結するため問題ない
-4. `get_device_by_id`（208 行目）では `init_com_mta()` を呼び出し、ガードを戻り値に含める。シグネチャを `Result<(ComGuard, IMMDevice)>` に変更する
-5. `WasapiCaptureImpl` / `WasapiPlaybackImpl` に `_com_guard: ComGuard` フィールドを追加し、`new()` で `get_device_by_id` から受け取ったガードを保持する。フィールドの宣言順序に注意: `_com_guard` は COM オブジェクト（`session`）より **後** に宣言する。将来 `Drop::drop()` の実装が変わった場合でも、フィールド drop 時の COM Release が `CoUninitialize` より先に呼ばれることを保証するため
+設計方針の「`WasapiCaptureImpl` / `WasapiPlaybackImpl` が `ComGuard` をメンバーとして保持する」案は採用しなかった。公開型が `Send` であるため、オブジェクトを別スレッドへ移動して drop すると、`CoUninitialize` を初期化したスレッドで呼べず、ガードが不完全になるためである。
+
+- `src/runtime.rs` に `initialize_thread()` と `ThreadGuard` を追加した。Windows では `CoInitializeEx` で MTA を初期化し、`ThreadGuard` の drop で `CoUninitialize` を呼ぶ。macOS / Linux では何もしない
+- `enumerate_devices_by_type`、`get_device_by_id`、`WasapiCaptureImpl` / `WasapiPlaybackImpl` の `new` / `start` / `stop` / `Drop` から COM の初期化を削除した。ライブラリを使うスレッドごとに、そのスレッドの先頭で `initialize_thread()` を呼ぶ契約に変更した
+- ライブラリが生成するスレッドでは、`spawn` の直前に `ComGuard::init_mta()` を置いた。ガードはスレッド関数の引数 (COM インターフェース) が解放された後に drop される
+- 呼び出し元スレッドが COM を初期化していない場合は、`CoCreateInstance` が返す `CO_E_NOTINITIALIZED` を検出して `Error::ComInitFailed` に変換するようにした
+- `README.md` と `examples/` を新しい使い方に更新し、`CHANGES.md` の `## develop` に `[CHANGE]` と `[FIX]` を追記した
+
+`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` がすべてパスすることを確認した。実機 (Windows) でデバイス列挙の繰り返し、キャプチャと再生の開始・停止・破棄、別スレッドでの破棄を行い、COM の初期化カウンタが増えないこと、`initialize_thread()` のガードを drop するとカウンタが 0 に戻ることを確認した。
 
 ## 後方互換
 
-`init_com_mta()` と `get_device_by_id` は `pub(crate)` であり公開 API に影響なし。内部呼び出し側（`enumerate_devices_by_type`、`get_device_by_id`、`WasapiCaptureImpl`、`WasapiPlaybackImpl`）の構造が変わるが、外部からは観測できない
+Windows では利用者がスレッドごとに `initialize_thread()` を呼ぶ必要があるため、後方互換のない変更になる。`init_com_mta()` と `get_device_by_id` は `pub(crate)` のままで、公開 API には `initialize_thread()` と `ThreadGuard` を追加した。

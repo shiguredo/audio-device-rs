@@ -13,6 +13,9 @@ fn main() {
 
     use shiguredo_audio_device::{AudioPlayback, AudioPlaybackConfig, PlaybackFrame};
 
+    let _guard = shiguredo_audio_device::initialize_thread()
+        .expect("failed to initialize the audio library");
+
     /// 再生するサイン波の周波数 (Hz)
     const FREQUENCY: f64 = 440.0;
     /// サイン波の振幅 (0.0 - 1.0)

@@ -9,6 +9,9 @@ fn main() {
 
     use shiguredo_audio_device::{AudioDeviceList, AudioDeviceType};
 
+    let _guard = shiguredo_audio_device::initialize_thread()
+        .expect("failed to initialize the audio library");
+
     let device_list = match AudioDeviceList::enumerate() {
         Ok(list) => list,
         Err(e) => {

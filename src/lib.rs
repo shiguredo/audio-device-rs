@@ -7,6 +7,7 @@
 
 mod common;
 mod error;
+mod runtime;
 
 #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire, enable_wasapi))]
 mod capture;
@@ -43,3 +44,5 @@ pub use device::{AudioDevice, AudioDeviceList};
 pub use playback::AudioPlayback;
 
 pub use error::{Error, Result};
+
+pub use runtime::{ThreadGuard, initialize_thread};
