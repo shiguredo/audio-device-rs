@@ -280,11 +280,7 @@ fn capture_thread_func(
                     // タイムスタンプを取得（マイクロ秒）
                     let mut counter = 0i64;
                     let _ = QueryPerformanceCounter(&mut counter);
-                    let timestamp_us = if frequency > 0 {
-                        (counter * 1_000_000) / frequency
-                    } else {
-                        0
-                    };
+                    let timestamp_us = qpc_counter_to_micros(counter, frequency);
 
                     // データサイズを計算
                     let bytes_per_sample: usize = match format {
@@ -324,5 +320,63 @@ fn capture_thread_func(
             }
         }
         CoUninitialize();
+    }
+}
+
+/// QueryPerformanceCounter が返すカウンター値をマイクロ秒へ変換する。
+///
+/// `frequency` が 0 以下の場合は無効な値とみなして 0 を返す。
+fn qpc_counter_to_micros(counter: i64, frequency: i64) -> i64 {
+    if frequency <= 0 {
+        return 0;
+    }
+
+    // counter * 1_000_000 は QPC カウンターが大きくなると i64 の範囲を超えるため、
+    // 中間計算は i128 で行う。counter / frequency はシステム起動からの経過時間 (秒) であり、
+    // マイクロ秒に換算した値は i64 の範囲 (約 29 万年) に収まるため、i64 へのキャストは安全である。
+    ((counter as i128) * 1_000_000 / (frequency as i128)) as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::qpc_counter_to_micros;
+
+    /// counter * 1_000_000 が i64 の最大値を超える境界値でも正しく変換できること
+    #[test]
+    fn converts_counter_whose_product_exceeds_i64_max() {
+        // 10 MHz の QPC で counter * 1_000_000 が i64::MAX を超える最小の counter を渡す
+        let frequency = 10_000_000;
+        let counter = i64::MAX / 1_000_000 + 1;
+
+        assert_eq!(
+            qpc_counter_to_micros(counter, frequency),
+            922_337_203_685,
+            "i64 の乗算でオーバーフローする境界値でもパニックせず正しいマイクロ秒を返すこと"
+        );
+    }
+
+    /// counter = frequency のときに 1 秒分のマイクロ秒を返すこと
+    #[test]
+    fn converts_one_second_to_one_million_micros() {
+        assert_eq!(
+            qpc_counter_to_micros(10_000_000, 10_000_000),
+            1_000_000,
+            "10 MHz のカウンターが 10,000,000 進むと 1 秒になること"
+        );
+    }
+
+    /// frequency が 0 以下の場合に 0 を返すこと
+    #[test]
+    fn returns_zero_when_frequency_is_not_positive() {
+        assert_eq!(
+            qpc_counter_to_micros(1_000_000, 0),
+            0,
+            "frequency が 0 のときは 0 を返すこと"
+        );
+        assert_eq!(
+            qpc_counter_to_micros(1_000_000, -1),
+            0,
+            "frequency が負のときは 0 を返すこと"
+        );
     }
 }

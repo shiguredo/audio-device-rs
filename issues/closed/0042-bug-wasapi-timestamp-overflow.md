@@ -1,7 +1,7 @@
 # WASAPI キャプチャのタイムスタンプ計算で i64 オーバーフローが発生する
 
 - Created: 2026-10-13
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-19
 - Branch: feature/fix-wasapi-timestamp-overflow
 - Polished: {YYYY-MM-DD}
 
@@ -37,7 +37,7 @@ Windows の QPC カウンターは単調増加で、システム起動からの�
 
 ## 解決方法
 
-`capture_thread_func` の変換式を以下に変更する。
+`capture_thread_func` の変換式を以下のとおり変更した。
 
 ```rust
 let timestamp_us = if frequency > 0 {
@@ -47,11 +47,13 @@ let timestamp_us = if frequency > 0 {
 };
 ```
 
-変換処理を純粋関数 (例: `qpc_counter_to_micros(counter: i64, frequency: i64) -> i64`) として切り出し、`capture_thread_func` からはその関数を呼ぶ。`#[cfg(test)] mod tests` に以下を追加する。
+変換処理を純粋関数 `qpc_counter_to_micros(counter: i64, frequency: i64) -> i64` として切り出し、`capture_thread_func` からはその関数を呼ぶようにした。`#[cfg(test)] mod tests` に以下を追加した。
 
 - `counter * 1_000_000` が i64 の最大値を超える値 (例: `i64::MAX / 1_000_000 + 1`) を渡してもパニックせず、期待するマイクロ秒が返ること
 - `frequency <= 0` の場合に 0 が返ること
 - 通常値 (例: `counter = frequency` で 1 秒) で 1,000,000 が返ること
+
+`cargo test --workspace` (debug / release)、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo fmt --all -- --check` がすべてパスすることを確認した。
 
 ## 完了条件
 
