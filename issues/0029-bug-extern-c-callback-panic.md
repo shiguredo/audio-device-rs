@@ -54,13 +54,17 @@ extern "C" fn playback_callback(
 
 ## 設計方針
 
+以下は `catch_unwind` 使用の許可が得られた場合の案である。許可が得られていない現時点では確定事項として扱わない。
+
 `std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ...))` でコールバック呼び出しを囲み、panic 時はキャプチャ側は early return、再生側は 0 を返す。
 
 ### shiguredo-rust 規約との関係
 
-shiguredo-rust スキルは「`std::panic::catch_unwind` を使わないこと。どうしても必要な場合は許可を得ること」と定めている。本 issue は FFI 境界でのユーザーコード panic という、ライブラリが制御不能な外部要因からプロセスを保護するケースであり、「どうしても必要な場合」に該当する。通常の Rust コード内のエラー処理に `catch_unwind` を使うのとは異なり、`extern "C"` 関数内では panic が C 側に伝播して UB / abort になるため、FFI 境界での `catch_unwind` は技術的に必須である。
+shiguredo-rust スキルは「`std::panic::catch_unwind` を使わないこと。どうしても必要な場合は許可を得ること」と定めている。本 issue は FFI 境界でのユーザーコード panic という、ライブラリが制御不能な外部要因からプロセスを保護するケースであり、`catch_unwind` 以外に panic を止める手段がない。通常の Rust コード内のエラー処理に `catch_unwind` を使うのとは異なり、`extern "C"` 関数内では panic が C 側に伝播して UB / abort になるため、`catch_unwind` を外すとユーザーコードの panic がそのままプロセス全体の abort になる。
 
-**本 issue の PR をプロジェクトオーナーがレビュー・マージした時点で、このケースに対する `catch_unwind` 使用の許可とする。**
+ただし、これが規約の「どうしても必要な場合」に該当するかはプロジェクトオーナーが判断することであり、**現時点でこのケースに対する `catch_unwind` 使用の許可は得られていない。許可を得る前に実装・マージしてはならない。**
+
+許可が得られない場合は、panic 時に abort する現在の挙動を仕様として明記する対応（ユーザーコールバックが panic しないことの契約化）に切り替えるか、本 issue を closed にするかを判断すること。
 
 ## 完了条件
 
@@ -71,6 +75,8 @@ shiguredo-rust スキルは「`std::panic::catch_unwind` を使わないこと�
 
 ## 解決方法
 
+以下は `catch_unwind` 使用の許可が得られた場合の実装案である。許可が得られていない状態では着手しないこと。
+
 1. `capture_ffi.rs:218` の `(context.callback)(frame);` を `std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (context.callback)(frame)))` で囲み、`Err` 時は early return する
 2. `playback_ffi.rs:221` の `(context.callback)(frames, channels, sample_rate)` を `catch_unwind` で囲む。戻り値が `Result<Option<PlaybackFrame>, _>` になるため、`let Ok(Some(frame)) = result else { return 0; };` のように統合する
 3. 単体テストを追加する
@@ -78,3 +84,7 @@ shiguredo-rust スキルは「`std::panic::catch_unwind` を使わないこと�
 ## 後方互換
 
 動作変更あり。従来ユーザーコードの panic でプロセスが abort していたが、修正後は panic が捕捉され early return / 0 返却になる。CHANGES.md に `[FIX]` として記載する
+
+## pending にした理由
+
+プロジェクトオーナーは本 issue での `std::panic::catch_unwind` 使用を許可していない。`extern "C"` 境界でユーザーコールバックの panic を止める手段は `catch_unwind` 以外にないため、本 issue の実装案は実行できない。panic 時に abort する現在の挙動を仕様として明文化する対応に切り替えるか、issue を closed にするかを決めるまで pending とする。
