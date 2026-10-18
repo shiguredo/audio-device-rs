@@ -67,20 +67,21 @@ impl WasapiCaptureImpl {
             let sample_rate = wave_format.nSamplesPerSec as i32;
             let channels = wave_format.nChannels as i32;
 
-            CoTaskMemFree(Some(mix_format as *const _));
-
             // オーディオクライアントを初期化（10ms バッファ）
             let buffer_duration: i64 = 100_000; // 100 ナノ秒単位で 10ms を指定する
-            audio_client
-                .Initialize(
-                    AUDCLNT_SHAREMODE_SHARED,
-                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                    buffer_duration,
-                    0,
-                    mix_format,
-                    Some(std::ptr::null()),
-                )
-                .map_err(|_| Error::SessionCreateFailed)?;
+            let init_result = audio_client.Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                buffer_duration,
+                0,
+                mix_format,
+                Some(std::ptr::null()),
+            );
+
+            // Initialize の成否にかかわらず mix_format を解放する
+            CoTaskMemFree(Some(mix_format as *const _));
+
+            init_result.map_err(|_| Error::SessionCreateFailed)?;
 
             // キャプチャクライアントを取得
             let capture_client: IAudioCaptureClient = audio_client
@@ -136,7 +137,7 @@ impl WasapiCaptureImpl {
                 .map_err(|_| Error::SessionStartFailed)?;
         }
 
-        // スレッド生成成功後に running フラグを立てる
+        // スレッド生成前に running フラグを立てる
         context.running.store(true, Ordering::Release);
 
         // キャプチャに必要なデータをクローン（Send ラッパーで包む）
@@ -145,7 +146,8 @@ impl WasapiCaptureImpl {
         let format = session.format;
         let sample_rate = session.sample_rate;
         let channels = session.channels;
-        let context = Arc::clone(context);
+
+        let thread_context = Arc::clone(context);
 
         // キャプチャスレッドを開始
         let handle = thread::Builder::new()
@@ -157,14 +159,15 @@ impl WasapiCaptureImpl {
                     format,
                     sample_rate,
                     channels,
-                    context,
+                    thread_context,
                 );
             })
             .map_err(|_| {
+                context.running.store(false, Ordering::Release);
                 unsafe {
                     let _ = session.audio_client.Stop();
                 }
-                Error::SessionCreateFailed
+                Error::SessionStartFailed
             })?;
 
         self.capture_thread = Some(handle);

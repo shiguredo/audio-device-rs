@@ -18,6 +18,8 @@
   - @voluntas
 - [FIX] WASAPI キャプチャのタイムスタンプ計算で i64 オーバーフローが発生する問題を修正する
   - @melpon
+- [FIX] WASAPI キャプチャの Use-After-Free と、スレッド生成失敗時に running フラグが残る問題を修正する
+  - @melpon
 
 ### misc
 
