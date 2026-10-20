@@ -69,14 +69,17 @@ impl FfiPlaybackImpl {
         config: AudioPlaybackConfig,
         callback: impl Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
     ) -> Result<Self> {
-        let device_id_cstr = config.device_id.as_ref().map(|s| CString::new(s.as_str()));
-        let device_id_ptr = match &device_id_cstr {
-            Some(Ok(cstr)) => cstr.as_ptr(),
-            Some(Err(_)) => {
-                return Err(Error::NullPointer("device_id contains null byte"));
-            }
-            None => std::ptr::null(),
-        };
+        // デバイス ID は C 側で C 文字列として扱われるため、内部に NUL バイトを
+        // 含む場合は C 側へ渡す前に拒否する。
+        let device_id_cstr = config
+            .device_id
+            .as_deref()
+            .map(CString::new)
+            .transpose()
+            .map_err(|_| Error::InvalidDeviceId)?;
+        let device_id_ptr = device_id_cstr
+            .as_ref()
+            .map_or(std::ptr::null(), |cstr| cstr.as_ptr());
 
         let session =
             unsafe { (ops.session_create)(device_id_ptr, config.sample_rate, config.channels) };

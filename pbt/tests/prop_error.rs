@@ -14,32 +14,43 @@ const SEED_ENV: &str = "AUDIO_DEVICE_PBT_SEED";
 /// デフォルトのケースバジェット
 const CASES: usize = 256;
 
+/// `Error` のバリアントを生成する関数の型
+type ErrorSampler = fn(&mut noprop::TestCaseContext) -> Error;
+
+/// `Error` の全バリアントを生成する関数の一覧
+///
+/// バリアントを追加するときはこの一覧に追加するだけでよく、サンプリング対象の
+/// 個数を別途管理する必要はない。
+const ERROR_SAMPLERS: &[ErrorSampler] = &[
+    |_| Error::DeviceNotFound,
+    |_| Error::DeviceAccessDenied,
+    |_| Error::SessionCreateFailed,
+    |_| Error::SessionStartFailed,
+    |_| Error::InvalidChannels,
+    |_| Error::DataTooLarge(i8::try_from(256i16).expect_err("256 は i8 に収まらない")),
+    |ctx| Error::UnknownFormat(noprop::sample_i32(ctx)),
+    |ctx| Error::UnknownDeviceType(noprop::sample_i32(ctx)),
+    |_| Error::NullPointer("device name"),
+    |_| Error::InvalidDeviceId,
+    |_| Error::ComInitFailed,
+];
+
 /// `Error` の全バリアントを生成する
 ///
 /// 到達ゲートで全バリアントが実際に生成されたことを確認できるよう、
 /// `sample_error` の戻り値と併せてバリアント番号も返す。
 fn sample_error(ctx: &mut noprop::TestCaseContext) -> (Error, usize) {
-    let index = noprop::sample_weighted_index(ctx, &[1; 10]);
-    let err = match index {
-        0 => Error::DeviceNotFound,
-        1 => Error::DeviceAccessDenied,
-        2 => Error::SessionCreateFailed,
-        3 => Error::SessionStartFailed,
-        4 => Error::InvalidChannels,
-        5 => Error::DataTooLarge(i8::try_from(256i16).expect_err("256 は i8 に収まらない")),
-        6 => Error::UnknownFormat(noprop::sample_i32(ctx)),
-        7 => Error::UnknownDeviceType(noprop::sample_i32(ctx)),
-        8 => Error::NullPointer("device name"),
-        _ => Error::ComInitFailed,
-    };
-    (err, index)
+    let index = noprop::sample_usize_in(ctx, 0..ERROR_SAMPLERS.len());
+    (ERROR_SAMPLERS[index](ctx), index)
 }
 
 /// 全バリアントの Display 出力が空でない
 #[test]
 fn prop_error_display_is_non_empty() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
-    let reached = (0..10).map(|_| Cell::new(0usize)).collect::<Vec<_>>();
+    let reached = (0..ERROR_SAMPLERS.len())
+        .map(|_| Cell::new(0usize))
+        .collect::<Vec<_>>();
     let mut runner = noprop::Runner::new(seed);
     runner.run(CASES, |ctx| {
         let (err, index) = sample_error(ctx);
@@ -49,7 +60,9 @@ fn prop_error_display_is_non_empty() -> noprop::TestResult {
         reached[index].set(reached[index].get() + 1);
         Ok(())
     })?;
-    let unreached: Vec<usize> = (0..10).filter(|&i| reached[i].get() == 0).collect();
+    let unreached: Vec<usize> = (0..ERROR_SAMPLERS.len())
+        .filter(|&i| reached[i].get() == 0)
+        .collect();
     assert!(
         unreached.is_empty(),
         "全バリアントの Display が検証されること (未到達: {unreached:?})\n{runner}"
