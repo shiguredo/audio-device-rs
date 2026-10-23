@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-20
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-23
 - Model: Qwen 3
 - Branch: feature/fix-convention-violations
 - Polished: {YYYY-MM-DD}
@@ -35,4 +35,12 @@
 
 ## 解決方法
 
-各項目を順に修正する。いずれも機械的な修正であり、ロジック変更は伴わない。
+issue に列挙された 8 項目は、develop 上の規約準拠作業で既に修正済みであった。追加のコード変更は不要であった。
+
+- `src/ffi.rs` の `#[allow]` を削除し、lint 抑制は `#[expect]` のみとした
+- `AudioFormat::bytes_per_sample` を `self` 受けに変更した
+- テストの `.unwrap()` を `.expect()` に置き換え、メッセージを日本語にした
+- `AudioFormat` と `audio.h` のコメントを日本語にした
+- PBT を noprop に移行し、依存バージョンをマイナーまで指定するとともに用途コメントを追加した
+
+`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` がすべて成功することを確認した。
