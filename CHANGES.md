@@ -48,6 +48,8 @@
   - @voluntas
 - [UPDATE] 依存クレートのバージョン指定をマイナーバージョンまでに揃え、用途コメントを追加する
   - @voluntas
+- [UPDATE] `AudioDeviceList` の列挙メソッドの重複コードを共通ヘルパーに集約する
+  - @melpon
 
 ## 2026.3.0
 

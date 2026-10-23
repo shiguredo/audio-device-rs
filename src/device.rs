@@ -180,45 +180,21 @@ impl AudioDeviceList {
     #[cfg(enable_coreaudio)]
     pub fn enumerate_coreaudio() -> Result<Self> {
         let inner = FfiDeviceListImpl::enumerate_coreaudio(None)?;
-        let devices = inner
-            .as_slice()
-            .iter()
-            .map(|d| AudioDevice(AudioDeviceInner::Ffi(*d)))
-            .collect();
-        Ok(Self(AudioDeviceListInner::Ffi {
-            _inner: inner,
-            devices,
-        }))
+        Ok(Self::from_ffi(inner))
     }
 
     /// CoreAudio で入力デバイスを列挙する。
     #[cfg(enable_coreaudio)]
     pub fn enumerate_input_coreaudio() -> Result<Self> {
         let inner = FfiDeviceListImpl::enumerate_coreaudio(Some(AudioDeviceType::Input))?;
-        let devices = inner
-            .as_slice()
-            .iter()
-            .map(|d| AudioDevice(AudioDeviceInner::Ffi(*d)))
-            .collect();
-        Ok(Self(AudioDeviceListInner::Ffi {
-            _inner: inner,
-            devices,
-        }))
+        Ok(Self::from_ffi(inner))
     }
 
     /// CoreAudio で出力デバイスを列挙する。
     #[cfg(enable_coreaudio)]
     pub fn enumerate_output_coreaudio() -> Result<Self> {
         let inner = FfiDeviceListImpl::enumerate_coreaudio(Some(AudioDeviceType::Output))?;
-        let devices = inner
-            .as_slice()
-            .iter()
-            .map(|d| AudioDevice(AudioDeviceInner::Ffi(*d)))
-            .collect();
-        Ok(Self(AudioDeviceListInner::Ffi {
-            _inner: inner,
-            devices,
-        }))
+        Ok(Self::from_ffi(inner))
     }
 
     // -----------------------------------------------------------------------
@@ -229,45 +205,21 @@ impl AudioDeviceList {
     #[cfg(enable_pulse)]
     pub fn enumerate_pulse() -> Result<Self> {
         let inner = FfiDeviceListImpl::enumerate_pulse(None)?;
-        let devices = inner
-            .as_slice()
-            .iter()
-            .map(|d| AudioDevice(AudioDeviceInner::Ffi(*d)))
-            .collect();
-        Ok(Self(AudioDeviceListInner::Ffi {
-            _inner: inner,
-            devices,
-        }))
+        Ok(Self::from_ffi(inner))
     }
 
     /// PulseAudio で入力デバイスを列挙する。
     #[cfg(enable_pulse)]
     pub fn enumerate_input_pulse() -> Result<Self> {
         let inner = FfiDeviceListImpl::enumerate_pulse(Some(AudioDeviceType::Input))?;
-        let devices = inner
-            .as_slice()
-            .iter()
-            .map(|d| AudioDevice(AudioDeviceInner::Ffi(*d)))
-            .collect();
-        Ok(Self(AudioDeviceListInner::Ffi {
-            _inner: inner,
-            devices,
-        }))
+        Ok(Self::from_ffi(inner))
     }
 
     /// PulseAudio で出力デバイスを列挙する。
     #[cfg(enable_pulse)]
     pub fn enumerate_output_pulse() -> Result<Self> {
         let inner = FfiDeviceListImpl::enumerate_pulse(Some(AudioDeviceType::Output))?;
-        let devices = inner
-            .as_slice()
-            .iter()
-            .map(|d| AudioDevice(AudioDeviceInner::Ffi(*d)))
-            .collect();
-        Ok(Self(AudioDeviceListInner::Ffi {
-            _inner: inner,
-            devices,
-        }))
+        Ok(Self::from_ffi(inner))
     }
 
     // -----------------------------------------------------------------------
@@ -278,45 +230,21 @@ impl AudioDeviceList {
     #[cfg(enable_pipewire)]
     pub fn enumerate_pipewire() -> Result<Self> {
         let inner = FfiDeviceListImpl::enumerate_pipewire(None)?;
-        let devices = inner
-            .as_slice()
-            .iter()
-            .map(|d| AudioDevice(AudioDeviceInner::Ffi(*d)))
-            .collect();
-        Ok(Self(AudioDeviceListInner::Ffi {
-            _inner: inner,
-            devices,
-        }))
+        Ok(Self::from_ffi(inner))
     }
 
     /// PipeWire で入力デバイスを列挙する。
     #[cfg(enable_pipewire)]
     pub fn enumerate_input_pipewire() -> Result<Self> {
         let inner = FfiDeviceListImpl::enumerate_pipewire(Some(AudioDeviceType::Input))?;
-        let devices = inner
-            .as_slice()
-            .iter()
-            .map(|d| AudioDevice(AudioDeviceInner::Ffi(*d)))
-            .collect();
-        Ok(Self(AudioDeviceListInner::Ffi {
-            _inner: inner,
-            devices,
-        }))
+        Ok(Self::from_ffi(inner))
     }
 
     /// PipeWire で出力デバイスを列挙する。
     #[cfg(enable_pipewire)]
     pub fn enumerate_output_pipewire() -> Result<Self> {
         let inner = FfiDeviceListImpl::enumerate_pipewire(Some(AudioDeviceType::Output))?;
-        let devices = inner
-            .as_slice()
-            .iter()
-            .map(|d| AudioDevice(AudioDeviceInner::Ffi(*d)))
-            .collect();
-        Ok(Self(AudioDeviceListInner::Ffi {
-            _inner: inner,
-            devices,
-        }))
+        Ok(Self::from_ffi(inner))
     }
 
     // -----------------------------------------------------------------------
@@ -326,46 +254,22 @@ impl AudioDeviceList {
     /// WASAPI で全デバイスを列挙する。
     #[cfg(enable_wasapi)]
     pub fn enumerate_wasapi() -> Result<Self> {
-        let mut inner = WasapiDeviceListImpl::enumerate(None)?;
-        let raw_devices = std::mem::take(&mut inner.devices);
-        let devices = raw_devices
-            .into_iter()
-            .map(|d| AudioDevice(AudioDeviceInner::Wasapi(d)))
-            .collect();
-        Ok(Self(AudioDeviceListInner::Wasapi {
-            _inner: inner,
-            devices,
-        }))
+        let inner = WasapiDeviceListImpl::enumerate(None)?;
+        Ok(Self::from_wasapi(inner))
     }
 
     /// WASAPI で入力デバイスを列挙する。
     #[cfg(enable_wasapi)]
     pub fn enumerate_input_wasapi() -> Result<Self> {
-        let mut inner = WasapiDeviceListImpl::enumerate(Some(AudioDeviceType::Input))?;
-        let raw_devices = std::mem::take(&mut inner.devices);
-        let devices = raw_devices
-            .into_iter()
-            .map(|d| AudioDevice(AudioDeviceInner::Wasapi(d)))
-            .collect();
-        Ok(Self(AudioDeviceListInner::Wasapi {
-            _inner: inner,
-            devices,
-        }))
+        let inner = WasapiDeviceListImpl::enumerate(Some(AudioDeviceType::Input))?;
+        Ok(Self::from_wasapi(inner))
     }
 
     /// WASAPI で出力デバイスを列挙する。
     #[cfg(enable_wasapi)]
     pub fn enumerate_output_wasapi() -> Result<Self> {
-        let mut inner = WasapiDeviceListImpl::enumerate(Some(AudioDeviceType::Output))?;
-        let raw_devices = std::mem::take(&mut inner.devices);
-        let devices = raw_devices
-            .into_iter()
-            .map(|d| AudioDevice(AudioDeviceInner::Wasapi(d)))
-            .collect();
-        Ok(Self(AudioDeviceListInner::Wasapi {
-            _inner: inner,
-            devices,
-        }))
+        let inner = WasapiDeviceListImpl::enumerate(Some(AudioDeviceType::Output))?;
+        Ok(Self::from_wasapi(inner))
     }
 
     // -----------------------------------------------------------------------
@@ -390,6 +294,42 @@ impl AudioDeviceList {
     /// デバイスが空かどうかを返す。
     pub fn is_empty(&self) -> bool {
         self.as_slice().is_empty()
+    }
+
+    // -----------------------------------------------------------------------
+    // 内部ヘルパー
+    // -----------------------------------------------------------------------
+
+    /// FFI バックエンドのデバイスリストを [AudioDeviceList] に変換する。
+    #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
+    fn from_ffi(inner: FfiDeviceListImpl) -> Self {
+        // [_inner] を保持することで、デバイスが参照する C 側のデバイス配列がリストより先に
+        // 解放されないようにする。
+        let devices = inner
+            .as_slice()
+            .iter()
+            .map(|d| AudioDevice(AudioDeviceInner::Ffi(*d)))
+            .collect();
+        Self(AudioDeviceListInner::Ffi {
+            _inner: inner,
+            devices,
+        })
+    }
+
+    /// WASAPI のデバイスリストを [AudioDeviceList] に変換する。
+    #[cfg(enable_wasapi)]
+    fn from_wasapi(mut inner: WasapiDeviceListImpl) -> Self {
+        // WASAPI のデバイスリストが保持するデバイスを [AudioDevice] に移し、[_inner] には
+        // デバイスを空にしたリストを残す。
+        let raw_devices = std::mem::take(&mut inner.devices);
+        let devices = raw_devices
+            .into_iter()
+            .map(|d| AudioDevice(AudioDeviceInner::Wasapi(d)))
+            .collect();
+        Self(AudioDeviceListInner::Wasapi {
+            _inner: inner,
+            devices,
+        })
     }
 }
 
