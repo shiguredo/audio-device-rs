@@ -1,7 +1,7 @@
 # WASAPI キャプチャの timestamp が読み出し時刻になっている
 
 - Created: 2026-10-19
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-24
 - Branch: feature/fix-wasapi-capture-timestamp
 - Polished: 2026-10-19
 
@@ -86,9 +86,10 @@ Windows (WASAPI) の音声キャプチャで、`AudioFrame.timestamp_us` をパ�
 
 ## 解決方法
 
-- `capture_thread_func` の `GetBuffer` 呼び出しで `pu64DevicePosition` と `pu64QPCPosition` を受け取り、`timestamp_us` に使う
-- `timestamp_for_packet`、`qpc_position_to_micros`、`interpolate_timestamp_us` を純粋関数として追加し、単体テストを追加する
-- `AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR` と `AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY` の扱いを実装する
-- `timestamp_for_packet` 内で、戻り値の `timestamp_us` が `last_timestamp_us` 以下にならないよう `clamp_timestamp_us` でクランプする
+- `capture_thread_func` の `GetBuffer` 呼び出しで `pu64DevicePosition` と `pu64QPCPosition` を受け取り、`qpc_position / 10` を `timestamp_us` に使う
+- パケットごとの timestamp 決定を `timestamp_for_packet` に切り出し、`qpc_position_to_micros` と `interpolate_timestamp_us` を追加する
+- `AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR` と `AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY` の扱いを実装する。`qpc_position` の有効性は `TIMESTAMP_ERROR` だけで判定する
+- `TimestampAnchor` で直前のパケットの基準を表し、`timestamp_for_packet` 内で `clamp_timestamp_us` によりタイムスタンプの単調性を保証する
+- 上記の分岐とクランプの単体テストを追加する
 - `qpc_counter_to_micros` は読み出し時刻へのフォールバック用として残す
-- Windows 実機で「Windows 実機での確認手順」を実施する
+- Windows 実機で 5 秒間のキャプチャを行い、通常時と burst 読み出しで `timestamp_us` が音声時間と一致することを確認する
