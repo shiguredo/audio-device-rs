@@ -18,9 +18,6 @@ const CASES: usize = 256;
 type ErrorSampler = fn(&mut noprop::TestCaseContext) -> Error;
 
 /// `Error` の全バリアントを生成する関数の一覧
-///
-/// バリアントを追加するときはこの一覧に追加するだけでよく、サンプリング対象の
-/// 個数を別途管理する必要はない。
 const ERROR_SAMPLERS: &[ErrorSampler] = &[
     |_| Error::DeviceNotFound,
     |_| Error::DeviceAccessDenied,

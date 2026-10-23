@@ -21,9 +21,7 @@ pub enum Error {
     NullPointer(&'static str),
     /// チャンネル数が 0 以下
     InvalidChannels,
-    /// デバイス ID が C 側で扱えない形式である
-    ///
-    /// デバイス ID に NUL バイトが含まれる場合に返される。
+    /// デバイス ID に NUL バイトが含まれている
     InvalidDeviceId,
     /// データ長が i32 に収まらない
     DataTooLarge(std::num::TryFromIntError),
