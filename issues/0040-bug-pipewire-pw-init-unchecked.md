@@ -1,7 +1,7 @@
 # audio_pipewire.c pw_init の戻り値未チェックと CHANGES.md の記載不整合を修正する
 
 - Created: 2026-07-30
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-23
 - Branch: feature/fix-pipewire-pw-init-check
 - Polished: {YYYY-MM-DD}
 
@@ -31,10 +31,10 @@ CHANGES.md の 2026.2.0 セクションに「[FIX] pw_init の戻り値未チェ
 
 ## 解決方法
 
-`src/audio_pipewire.c` の 3 箇所の `pw_init(NULL, NULL)` 呼び出しに戻り値チェックを追加する:
+本 issue の記述は誤りであり、修正は行わない。
 
-1. `audio_pipewire_enumerate_devices`: 失敗時に `-2` 相当のエラーを返す
-2. `audio_pipewire_session_create`: 失敗時に `NULL` を返す
-3. `audio_pipewire_playback_session_create`: 失敗時に `NULL` を返す
-
-CHANGES.md の該当エントリは、修正完了後に `## develop` セクションに移動するか、2026.2.0 の記載が正しいことをコードで裏付ける。
+- `pw_init` の戻り値型は `void` であり、失敗時の戻り値は存在しない
+- 0014 で同じ誤認に基づく修正を試み、`void value not ignored as it ought to be` のコンパイルエラーで revert 済み
+- CHANGES.md の 2026.2.0 の記載は、revert 後に残った古い記述である
+- CHANGES.md はリリース済みの過去の記述のため、本 issue では修正しない
+- 0014 の結論（戻り値チェックは不要）を再確認した
