@@ -1,7 +1,7 @@
 # WASAPI キャプチャが要求したサンプルレートとチャンネル数を無視する
 
 - Created: 2026-10-19
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-24
 - Branch: feature/fix-wasapi-capture-format-conversion
 - Polished: 2026-10-19
 - Reporter: @voluntas
@@ -67,10 +67,18 @@ Linux の PulseAudio と PipeWire も要求フォーマットを指定し、サ�
 
 ## 解決方法
 
-- `WasapiCaptureImpl::new` で `AudioCaptureConfig` から要求フォーマットを構築し、`Initialize` に渡すフラグとバッファ長を変更する
-- `SessionData` と `AudioFrame` の `format` を `AudioFormat::S16`、`sample_rate` と `channels` を `AudioCaptureConfig` の値にする
-- `GetMixFormat` と `determine_audio_format(mix_format)` を capture から削除する
-- 要求フォーマットの構築を純粋関数へ切り出し、正常値、0 以下、`u16` / `u32` 超過を含む単体テストを追加する
-- 要求フォーマットでの `Initialize` が失敗した場合は `Error::SessionCreateFailed` を返す (フォールバックしない)
-- README のキャプチャ例と `src/common.rs` の `AudioCaptureConfig` の rustdoc に、Windows のフォーマット変換とエラー条件を追加する
-- Windows 実機で「Windows 実機での確認手順」を実施する
+`src/capture_wasapi.rs` の `WasapiCaptureImpl::new` を次のとおり修正した。
+
+- `AudioCaptureConfig` の `sample_rate` と `channels` から S16 PCM の `WAVEFORMATEX` を構築する `build_capture_wave_format` を追加した
+- `IAudioClient::Initialize` に `AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM` と `AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY` を指定し、`hnsBufferDuration` と `hnsPeriodicity` を 0 にした
+- `SessionData` と `AudioFrame` の形式を `AudioFormat::S16`、サンプルレートとチャンネル数を要求値にした
+- `GetMixFormat` と capture 側の `determine_audio_format` 呼び出しを削除した
+- `Initialize` が失敗した場合は mix format へフォールバックせず `Error::SessionCreateFailed` を返すようにした
+- `sample_rate` と `channels` が 0 以下の場合は 48000 Hz / 1 ch に丸め、`WAVEFORMATEX` の `u16` / `u32` フィールドに収まらない場合は `Error::SessionCreateFailed` を返すようにした
+- 正常値、0 以下、`u16` 超過、`u32` 超過を検証する単体テストを追加した
+
+`AudioCaptureConfig` の rustdoc ではなく、`src/capture.rs` の `AudioCapture::new` の rustdoc に指定フォーマットと丸めを記載した。`AudioCapture::config` が構築時の設定をそのまま返すことも明記した。`README.md` には Windows の形式変換とエラー条件を追記し、`CHANGES.md` の `## develop` に `[FIX]` エントリを追加した。
+
+Windows 実機 (2ch 48000 Hz の入力) で、48000 Hz 1ch と 96000 Hz 1ch を要求したときに S16 のフレームが届き、`AudioFrame.data.len()` が `frames * channels * 2` になることを確認した。`sample_rate = 1` と `channels = 65536` では `Error::SessionCreateFailed` が返ることを確認した。
+
+`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` がすべて成功することを確認した。
