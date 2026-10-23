@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-20
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-23
 - Model: Qwen 3
 - Branch: feature/refactor-device-enumerate-duplication
 - Polished: {YYYY-MM-DD}
@@ -17,7 +17,7 @@
 
 ## 現状
 
-src/device.rs:107-260:
+src/device.rs の `AudioDeviceList` の列挙メソッド:
 
 FFI バックエンド 3 種 (coreaudio/pulse/pipewire) × フィルタ 3 種 (None/Input/Output) = 9 メソッド + WASAPI 3 メソッド = 合計 12 メソッドが、`FfiDeviceListImpl::enumerate_XXX(filter)` の呼び出しと `AudioDevice(AudioDeviceInner::Ffi(*d))` への変換・`AudioDeviceListInner::Ffi` の構築という同一パターンを繰り返している。
 
@@ -37,6 +37,12 @@ pub fn enumerate_coreaudio() -> Result<Self> {
 - 公開 API のシグネチャ・挙動が変わらない
 - `cargo clippy` / `cargo test` が通る
 
-## 解決方法
+## 対応方針
 
 プライベートヘルパ `fn from_ffi(inner: FfiDeviceListImpl) -> Self` と `fn from_wasapi(inner: WasapiDeviceListImpl) -> Self` を導入し、各メソッドを 1 行に削減する。
+
+## 解決方法
+
+- `src/device.rs` の `AudioDeviceList` に、FFI バックエンド用の `from_ffi` と WASAPI 用の `from_wasapi` のプライベートヘルパーを追加した
+- 列挙メソッド 12 個を、列挙処理とヘルパーの呼び出しの 2 行に簡略化した
+- 公開 API のシグネチャと挙動は変更していない
