@@ -21,6 +21,8 @@ pub enum Error {
     NullPointer(&'static str),
     /// チャンネル数が 0 以下
     InvalidChannels,
+    /// データ長がチャンネル数の倍数になっていない
+    InvalidDataLength,
     /// デバイス ID に NUL バイトが含まれている
     InvalidDeviceId,
     /// データ長が i32 に収まらない
@@ -44,6 +46,9 @@ impl fmt::Display for Error {
             ),
             Error::NullPointer(name) => write!(f, "null pointer: {}", name),
             Error::InvalidChannels => write!(f, "invalid channels: must be greater than 0"),
+            Error::InvalidDataLength => {
+                write!(f, "invalid data length: must be a multiple of channels")
+            }
             Error::InvalidDeviceId => {
                 write!(f, "invalid device id: must not contain a null byte")
             }

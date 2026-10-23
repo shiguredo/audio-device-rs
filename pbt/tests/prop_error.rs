@@ -24,6 +24,7 @@ const ERROR_SAMPLERS: &[ErrorSampler] = &[
     |_| Error::SessionCreateFailed,
     |_| Error::SessionStartFailed,
     |_| Error::InvalidChannels,
+    |_| Error::InvalidDataLength,
     |_| Error::DataTooLarge(i8::try_from(256i16).expect_err("256 は i8 に収まらない")),
     |ctx| Error::UnknownFormat(noprop::sample_i32(ctx)),
     |ctx| Error::UnknownDeviceType(noprop::sample_i32(ctx)),

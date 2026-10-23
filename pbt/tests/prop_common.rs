@@ -226,8 +226,8 @@ fn prop_mismatched_format_returns_none() -> noprop::TestResult {
 
 /// 妥当な入力で `PlaybackFrame::from_s16` が Ok を返す
 ///
-/// `frames` は `data.len() / channels` の切り捨て除算で決まるため、
-/// 割り切れない場合も含めて検証する。
+/// チャンネル数を先に決めてからフレーム数を生成するため、サンプル数は常に
+/// チャンネル数の倍数になる。
 #[test]
 fn prop_from_s16_valid_channels_returns_ok() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
@@ -235,21 +235,29 @@ fn prop_from_s16_valid_channels_returns_ok() -> noprop::TestResult {
     runner.run(CASES, |ctx| {
         let channels = noprop::sample_i32_in(ctx, 1..=32);
         let sample_rate = noprop::sample_choice(ctx, &[8000, 16000, 44100, 48000]);
-        let sample_count = noprop::sample_usize_in(ctx, 0..=512);
+        let frames = noprop::sample_usize_in(ctx, 0..=512);
+        let sample_count = frames * channels as usize;
         let data: Vec<i16> = (0..sample_count).map(|_| noprop::sample_i16(ctx)).collect();
 
         let frame = PlaybackFrame::from_s16(&data, channels, sample_rate)
-            .expect("channels > 0 なら Ok を返す");
-        let expected_frames =
-            i32::try_from(data.len()).expect("テストのデータ長は i32 に収まる") / channels;
-        assert_eq!(frame.frames, expected_frames, "frames が一致すること");
+            .expect("サンプル数が channels の倍数なら Ok を返す");
+        assert_eq!(
+            frame.frames,
+            i32::try_from(frames).expect("テストのフレーム数は i32 に収まる"),
+            "frames が一致すること"
+        );
         assert_eq!(frame.channels, channels, "channels が一致すること");
         assert_eq!(frame.sample_rate, sample_rate, "sample_rate が一致すること");
         assert_eq!(frame.format, AudioFormat::S16, "format が S16 であること");
         assert_eq!(
             frame.data.len(),
-            data.len() * 2,
+            sample_count * 2,
             "入力サンプル数から期待されるバイト数と一致すること"
+        );
+        assert_eq!(
+            (frame.frames as usize) * (frame.channels as usize),
+            frame.data.len() / 2,
+            "frames * channels が実データのサンプル数と一致すること"
         );
         Ok(())
     })?;
@@ -257,6 +265,9 @@ fn prop_from_s16_valid_channels_returns_ok() -> noprop::TestResult {
 }
 
 /// 妥当な入力で `PlaybackFrame::from_f32` が Ok を返す
+///
+/// チャンネル数を先に決めてからフレーム数を生成するため、サンプル数は常に
+/// チャンネル数の倍数になる。
 #[test]
 fn prop_from_f32_valid_channels_returns_ok() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
@@ -264,21 +275,67 @@ fn prop_from_f32_valid_channels_returns_ok() -> noprop::TestResult {
     runner.run(CASES, |ctx| {
         let channels = noprop::sample_i32_in(ctx, 1..=32);
         let sample_rate = noprop::sample_choice(ctx, &[8000, 16000, 44100, 48000]);
-        let sample_count = noprop::sample_usize_in(ctx, 0..=512);
+        let frames = noprop::sample_usize_in(ctx, 0..=512);
+        let sample_count = frames * channels as usize;
         let data: Vec<f32> = (0..sample_count).map(|_| noprop::sample_f32(ctx)).collect();
 
         let frame = PlaybackFrame::from_f32(&data, channels, sample_rate)
-            .expect("channels > 0 なら Ok を返す");
-        let expected_frames =
-            i32::try_from(data.len()).expect("テストのデータ長は i32 に収まる") / channels;
-        assert_eq!(frame.frames, expected_frames, "frames が一致すること");
+            .expect("サンプル数が channels の倍数なら Ok を返す");
+        assert_eq!(
+            frame.frames,
+            i32::try_from(frames).expect("テストのフレーム数は i32 に収まる"),
+            "frames が一致すること"
+        );
         assert_eq!(frame.channels, channels, "channels が一致すること");
         assert_eq!(frame.sample_rate, sample_rate, "sample_rate が一致すること");
         assert_eq!(frame.format, AudioFormat::F32, "format が F32 であること");
         assert_eq!(
             frame.data.len(),
-            data.len() * 4,
+            sample_count * 4,
             "入力サンプル数から期待されるバイト数と一致すること"
+        );
+        assert_eq!(
+            (frame.frames as usize) * (frame.channels as usize),
+            frame.data.len() / 4,
+            "frames * channels が実データのサンプル数と一致すること"
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// サンプル数がチャンネル数の倍数でない場合は `InvalidDataLength` を返す
+///
+/// チャンネル数を 2 以上にしてから余りを 1 以上加えることで、割り切れない
+/// サンプル数を確実に生成する。
+#[test]
+fn prop_non_multiple_sample_count_returns_err() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    let mut runner = noprop::Runner::new(seed);
+    runner.run(CASES, |ctx| {
+        let channels = noprop::sample_i32_in(ctx, 2..=32);
+        let frames = noprop::sample_usize_in(ctx, 0..=128);
+        let remainder = noprop::sample_usize_in(ctx, 1..channels as usize);
+        let sample_count = frames * channels as usize + remainder;
+        assert!(
+            !sample_count.is_multiple_of(channels as usize),
+            "生成したサンプル数が channels で割り切れないこと"
+        );
+
+        let data_s16: Vec<i16> = (0..sample_count).map(|_| noprop::sample_i16(ctx)).collect();
+        let result_s16 = PlaybackFrame::from_s16(&data_s16, channels, 48000);
+        assert!(
+            matches!(result_s16, Err(Error::InvalidDataLength)),
+            "割り切れないサンプル数なら from_s16 は InvalidDataLength を返すこと: \
+             {sample_count} samples / {channels} channels"
+        );
+
+        let data_f32: Vec<f32> = (0..sample_count).map(|_| noprop::sample_f32(ctx)).collect();
+        let result_f32 = PlaybackFrame::from_f32(&data_f32, channels, 48000);
+        assert!(
+            matches!(result_f32, Err(Error::InvalidDataLength)),
+            "割り切れないサンプル数なら from_f32 は InvalidDataLength を返すこと: \
+             {sample_count} samples / {channels} channels"
         );
         Ok(())
     })?;

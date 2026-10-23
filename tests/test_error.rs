@@ -16,3 +16,18 @@ fn invalid_device_id_display_is_descriptive() {
         "NUL バイトが原因であることが分かること: {message}"
     );
 }
+
+/// `InvalidDataLength` の表示がエラー内容を説明していること
+#[test]
+fn invalid_data_length_display_is_descriptive() {
+    let message = Error::InvalidDataLength.to_string();
+
+    assert!(
+        message.contains("data length"),
+        "データ長のエラーであることが分かること: {message}"
+    );
+    assert!(
+        message.contains("multiple of channels"),
+        "チャンネル数の倍数が要求されていることが分かること: {message}"
+    );
+}
