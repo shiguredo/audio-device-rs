@@ -24,6 +24,11 @@ pub(crate) enum AudioCaptureInner {
 
 impl AudioCapture {
     /// デフォルトバックエンドでキャプチャを構築する。
+    ///
+    /// `config.sample_rate` と `config.channels` で指定したサンプルレートと
+    /// チャンネル数の S16 ストリームでキャプチャする。
+    /// `config.sample_rate` と `config.channels` が 0 以下の値は、それぞれ
+    /// 48000 Hz、1 ch として扱う。
     #[cfg(any(
         enable_default_coreaudio,
         enable_default_pulse,
@@ -137,6 +142,8 @@ impl AudioCapture {
     }
 
     /// キャプチャ設定を取得する。
+    ///
+    /// 構築時に渡された設定をそのまま返す。
     pub fn config(&self) -> &AudioCaptureConfig {
         match &self.0 {
             #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]

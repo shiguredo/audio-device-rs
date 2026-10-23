@@ -185,6 +185,10 @@ capture.start()?;
 capture.stop();
 ```
 
+Windows では `sample_rate` と `channels` で指定した S16 のストリームを開き、共有モードの形式変換でデバイスの形式から変換します。
+指定した形式へ変換できない場合や、指定した値が WASAPI の形式で表現できない場合は `AudioCapture::new` が `Error::SessionCreateFailed` を返します。
+0 以下の値を指定した場合、実際のストリームのサンプルレートは 48000 Hz、チャンネル数は 1 ch になります。
+
 ### 再生
 
 ```rust
