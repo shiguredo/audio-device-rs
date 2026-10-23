@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-20
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-23
 - Model: Qwen 3
 - Branch: feature/add-insufficient-test-coverage
 - Polished: {YYYY-MM-DD}
@@ -34,7 +34,11 @@
 
 ## 解決方法
 
-1. `prop_capture.rs` と `prop_playback.rs` を `prop_common.rs` に統合する
-2. `arb_error()` に `Just(Error::InvalidChannels)` を追加する
-3. `src/common.rs` に `#[cfg(test)] mod tests` を追加し、`write_playback_frame_to_buffer` の直接テストを書く（空の src_data、dst_channels がサンプル数を割り切れない場合、F32→F32 パディング、マルチチャンネル変換）
-4. PBT に `AudioFrameOwned` → `as_frame()` → `to_owned()` のラウンドトリップテストを追加する
+issue に列挙された 4 項目は、develop 上の規約準拠作業で既に解消済みであった。追加のコード変更は不要であった。
+
+- `pbt/tests/prop_capture.rs` と `pbt/tests/prop_playback.rs` は `pbt/tests/prop_common.rs` に統合済みである
+- `pbt/tests/prop_error.rs` の `ERROR_SAMPLERS` に `Error::InvalidChannels` が含まれている
+- `src/common.rs` に `#[cfg(test)] mod tests` があり、`write_playback_frame_to_buffer` の空データ、部分フレーム、F32 パディング、マルチチャンネル変換を直接テストしている
+- `pbt/tests/prop_common.rs` の `prop_audio_frame_owned_roundtrip` が `as_frame()` → `to_owned()` のラウンドトリップを検証している
+
+`cargo test --workspace` が成功することを確認した。
