@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-20
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-23
 - Model: Qwen 3
 - Branch: feature/fix-playback-frame-frames-mismatch
 - Polished: 2026-07-21
@@ -64,10 +64,17 @@ pub fn from_f32(data: &[f32], channels: i32, sample_rate: i32) -> Result<Self> {
 
 ## 解決方法
 
-1. `from_s16`（215 行目）と `from_f32`（234 行目）の `let frames = ...` の前に `if data.len() % channels as usize != 0 { return Err(Error::InvalidDataLength); }` を追加する
-2. `src/error.rs` に `InvalidDataLength` バリアントを追加する（`Display` メッセージは `"invalid data length: must be a multiple of channels"`。既存の `InvalidChannels` パターンに倣う）
-3. `pbt/tests/prop_playback.rs` の既存テストを修正する。任意長の `data` と任意の `channels` を生成して `.unwrap()` しているため、`data.len() % channels == 0` を保証する strategy に変更する（例: `channels` を先に生成し、`data.len()` を `channels` の倍数に制限する）
-4. 非整列入力で `matches!(result, Err(Error::InvalidDataLength))` を検証する PBT を `pbt/tests/prop_playback.rs` に追加する
+`src/common.rs` の `PlaybackFrame::from_s16` / `from_f32` を次のとおり修正した。
+
+- `src/error.rs` に `Error::InvalidDataLength` を追加した。`Display` は `invalid data length: must be a multiple of channels` を返す
+- `PlaybackFrame::from_s16` / `from_f32` で、引数 `data` の要素数が `channels` の倍数でない場合に `Error::InvalidDataLength` を返すようにした。`frames` が実データのサンプル数と食い違う `PlaybackFrame` は生成されない
+- 引数 `data` の要素数が `i32` に収まらない場合は、従来どおり `Error::DataTooLarge` を返す
+- `PlaybackFrame::from_s16` / `from_f32` の doc コメントに、引数の解釈とエラー条件を記載した
+- `pbt/tests/prop_common.rs` の既存 PBT を `channels` の倍数のサンプル数を生成するよう修正し、`frames * channels` が実データのサンプル数と一致することを検証する PBT と、非整列入力で `Error::InvalidDataLength` を返すことを検証する PBT を追加した
+- `pbt/tests/prop_error.rs` と `tests/test_error.rs` に `Error::InvalidDataLength` のテストを追加した
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追記した
+
+`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` がすべて成功することを確認した。
 
 ## 後方互換
 
