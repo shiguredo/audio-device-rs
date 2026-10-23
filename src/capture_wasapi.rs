@@ -262,6 +262,16 @@ fn build_capture_wave_format(sample_rate: i32, channels: i32) -> Result<WAVEFORM
     })
 }
 
+/// パケットのキャプチャ時刻とデバイス位置の組。
+///
+/// `device_position` はストリーム開始からのサンプルフレーム数、`timestamp_us` は
+/// そのパケット先頭のキャプチャ時刻（マイクロ秒）である。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TimestampAnchor {
+    device_position: u64,
+    timestamp_us: i64,
+}
+
 /// キャプチャスレッド関数
 fn capture_thread_func(
     capture_client: IAudioCaptureClient,
@@ -276,8 +286,10 @@ fn capture_thread_func(
         let mut frequency = 0i64;
         let _ = QueryPerformanceFrequency(&mut frequency);
 
-        // タイムスタンプの補間に使う直前のパケットの (デバイス位置, タイムスタンプ)
-        let mut last_ref: Option<(u64, i64)> = None;
+        // タイムスタンプの補間に使う直前のパケットの基準
+        let mut last_anchor: Option<TimestampAnchor> = None;
+        // コールバックへ渡した直前のパケットのタイムスタンプ
+        let mut last_timestamp_us: Option<i64> = None;
 
         while context.running.load(Ordering::Acquire) {
             // イベント待機（10ms タイムアウト）
@@ -326,15 +338,16 @@ fn capture_thread_func(
                     let _ = QueryPerformanceCounter(&mut counter);
                     let read_time_us = qpc_counter_to_micros(counter, frequency);
 
-                    let (timestamp_us, new_ref) = timestamp_for_packet(
+                    let (timestamp_us, new_anchor) = timestamp_for_packet(
                         flags,
                         qpc_position,
                         device_position,
-                        last_ref,
                         sample_rate,
                         read_time_us,
+                        last_anchor,
+                        last_timestamp_us,
                     );
-                    last_ref = new_ref;
+                    last_anchor = new_anchor;
 
                     // データサイズを計算
                     let bytes_per_sample: usize = match format {
@@ -359,6 +372,8 @@ fn capture_thread_func(
                         continue;
                     }
 
+                    last_timestamp_us = Some(timestamp_us);
+
                     let data = std::slice::from_raw_parts(data_ptr, data_size);
                     let frame = AudioFrame {
                         data,
@@ -376,54 +391,91 @@ fn capture_thread_func(
     }
 }
 
-/// パケットのキャプチャ時刻をマイクロ秒で求める。
+/// パケットのキャプチャ時刻を求める。
 ///
-/// `last_ref` は直前のパケットの `(デバイス位置, タイムスタンプ)` である。戻り値は
-/// `(タイムスタンプ, 次のパケットへ渡す基準)` の順で、基準は
-/// `(デバイス位置, タイムスタンプ)` である。
+/// `flags` はバッファ状態フラグ、
+/// `qpc_position` はパケット先頭フレームのデバイス位置を記録した時点の QPC 値を 100 ナノ秒単位に換算した値、
+/// `device_position` はストリーム開始からのサンプルフレーム数、
+/// `sample_rate` は 1 秒あたりのサンプルフレーム数、
+/// `read_time_us` はマイクロ秒単位の読み出し時刻、
+/// `last_anchor` は直前のパケットの基準、
+/// `last_timestamp_us` は直前のパケットに付けてコールバックへ渡したタイムスタンプである。
 ///
-/// QPC 位置が有効な場合はその値をマイクロ秒へ換算して返す。QPC 位置が使えない場合は、
-/// データが途切れていなければ直前の基準からデバイス位置の差を補間する。
-/// 補間できない場合は `read_time_us` を返し、基準を `None` にする。
+/// 戻り値は `(タイムスタンプ, 補間の基準)` である。
+/// タイムスタンプはマイクロ秒単位となり、`last_timestamp_us` 以下にならないようクランプされる。
+/// 補間の基準は、`qpc_position` を使った場合や補間できた場合は `Some(TimestampAnchor)`、
+/// 読み出し時刻へフォールバックした場合は `None` になる。基準の `timestamp_us` は
+/// クランプ前の音声時刻である。
 fn timestamp_for_packet(
     flags: u32,
     qpc_position: u64,
     device_position: u64,
-    last_ref: Option<(u64, i64)>,
     sample_rate: i32,
     read_time_us: i64,
-) -> (i64, Option<(u64, i64)>) {
+    last_anchor: Option<TimestampAnchor>,
+    last_timestamp_us: Option<i64>,
+) -> (i64, Option<TimestampAnchor>) {
+    // TIMESTAMP_ERROR はデバイス位置を記録した時刻が不確実であることを示し、
+    // DATA_DISCONTINUITY はパケットが直前のパケットのデバイス位置と相関しないことを示す。
     let timestamp_error = (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32) != 0;
     let data_discontinuity = (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32) != 0;
 
-    // デバイスが記録した QPC 位置が使える場合は、それをパケット先頭の時刻とする
-    if !timestamp_error && qpc_position > 0 {
+    let (timestamp_us, new_anchor) = if !timestamp_error {
+        // qpc_position が使える場合は、それをパケット先頭の時刻とする
         let timestamp_us = qpc_position_to_micros(qpc_position);
-        return (timestamp_us, Some((device_position, timestamp_us)));
-    }
-
-    // QPC 位置が使えず、データが途切れていない場合は、直前の基準から補間する
-    if !data_discontinuity
-        && let Some((last_device_position, last_timestamp_us)) = last_ref
+        (
+            timestamp_us,
+            Some(TimestampAnchor {
+                device_position,
+                timestamp_us,
+            }),
+        )
+    } else if !data_discontinuity
+        && let Some(anchor) = last_anchor
+        // qpc_position が使えず、データが途切れていない場合は、直前の基準から補間する
         && let Some(timestamp_us) = interpolate_timestamp_us(
-            last_timestamp_us,
-            last_device_position,
+            anchor.timestamp_us,
+            anchor.device_position,
             device_position,
             sample_rate,
         )
     {
-        return (timestamp_us, Some((device_position, timestamp_us)));
-    }
+        (
+            timestamp_us,
+            Some(TimestampAnchor {
+                device_position,
+                timestamp_us,
+            }),
+        )
+    } else {
+        // qpc_position の利用も補間もできなかった場合、読み出し時刻を利用する
+        // 読み出し時刻は補間の基準にはしない
+        (read_time_us, None)
+    };
 
-    // 読み出し時刻はパケット先頭の音声の時刻ではないため、補間の基準にはしない
-    (read_time_us, None)
+    // タイムスタンプが逆行してしまうのを防ぐためクランプする
+    (
+        clamp_timestamp_us(timestamp_us, last_timestamp_us),
+        new_anchor,
+    )
 }
 
-/// `IAudioCaptureClient::GetBuffer` が返す QPC 位置をマイクロ秒へ変換する。
+/// 出力するタイムスタンプが直前のパケットのタイムスタンプ以下にならないようにする。
 ///
-/// QPC 位置は 100 ナノ秒単位なので、10 で割った値をマイクロ秒として返す。
+/// `last_timestamp_us` が `None` の場合は `timestamp_us` をそのまま返す。
+/// `timestamp_us` が `last_timestamp_us` 以下の場合は、`last_timestamp_us` に
+/// 1 マイクロ秒を加えた値を返す。
+/// `last_timestamp_us` が `i64::MAX` に達している場合は `i64::MAX` を返す。
+fn clamp_timestamp_us(timestamp_us: i64, last_timestamp_us: Option<i64>) -> i64 {
+    match last_timestamp_us {
+        Some(last) if timestamp_us <= last => last.saturating_add(1),
+        _ => timestamp_us,
+    }
+}
+
+/// QPC 位置をマイクロ秒へ変換する。
 fn qpc_position_to_micros(qpc_position: u64) -> i64 {
-    // u64::MAX / 10 は i64 の最大値に収まるため、キャストで値が失われない
+    // QPC 位置は 100 ナノ秒単位であるため、10 で割るとマイクロ秒になる
     (qpc_position / 10) as i64
 }
 
@@ -466,13 +518,13 @@ fn qpc_counter_to_micros(counter: i64, frequency: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_capture_wave_format, interpolate_timestamp_us, qpc_counter_to_micros,
-        qpc_position_to_micros, timestamp_for_packet,
+        TimestampAnchor, build_capture_wave_format, clamp_timestamp_us, interpolate_timestamp_us,
+        qpc_counter_to_micros, qpc_position_to_micros, timestamp_for_packet,
     };
     use crate::error::Error;
     use windows::Win32::Media::Audio::{
-        AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR,
-        WAVE_FORMAT_PCM, WAVEFORMATEX,
+        AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
+        AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, WAVE_FORMAT_PCM, WAVEFORMATEX,
     };
 
     /// タイムスタンプが無効であることを示すフラグ
@@ -480,6 +532,17 @@ mod tests {
 
     /// データの途切れを示すフラグ
     const DATA_DISCONTINUITY: u32 = AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32;
+
+    /// 無音パケットを示すフラグ
+    const SILENT: u32 = AUDCLNT_BUFFERFLAGS_SILENT.0 as u32;
+
+    /// デバイス位置とタイムスタンプから基準を作る。
+    fn anchor(device_position: u64, timestamp_us: i64) -> TimestampAnchor {
+        TimestampAnchor {
+            device_position,
+            timestamp_us,
+        }
+    }
 
     /// packed な `WAVEFORMATEX` のフィールドを値として取り出したもの
     struct WaveFormat {
@@ -678,16 +741,78 @@ mod tests {
     /// 使い、そのパケットを次の補間の基準にすること
     #[test]
     fn uses_qpc_position_as_timestamp() {
-        let (timestamp_us, new_ref) =
-            timestamp_for_packet(0, 100_000_000, 480, None, 48000, 7_000_000);
+        let (timestamp_us, new_anchor) =
+            timestamp_for_packet(0, 100_000_000, 480, 48000, 7_000_000, None, None);
 
         assert_eq!(
             timestamp_us, 10_000_000,
             "100 ナノ秒単位の QPC 位置をマイクロ秒に換算すること"
         );
         assert_eq!(
-            new_ref,
-            Some((480, 10_000_000)),
+            new_anchor,
+            Some(anchor(480, 10_000_000)),
+            "QPC 位置を使ったパケットを基準にすること"
+        );
+    }
+
+    /// 直前のタイムスタンプ以下になる場合は、直前 + 1 マイクロ秒にクランプし、
+    /// 基準はクランプ前の音声時刻のままにすること
+    #[test]
+    fn clamps_timestamp_but_keeps_anchor_raw() {
+        let (timestamp_us, new_anchor) = timestamp_for_packet(
+            0,
+            100_000_000,
+            480,
+            48000,
+            7_000_000,
+            None,
+            Some(10_000_000),
+        );
+
+        assert_eq!(
+            timestamp_us, 10_000_001,
+            "直前のタイムスタンプ以下にならないこと"
+        );
+        assert_eq!(
+            new_anchor,
+            Some(anchor(480, 10_000_000)),
+            "基準はクランプ前の音声時刻のままであること"
+        );
+    }
+
+    /// 読み出し時刻へのフォールバックでも、直前のタイムスタンプ以下にならないこと
+    #[test]
+    fn clamps_read_time_fallback() {
+        let (timestamp_us, new_anchor) = timestamp_for_packet(
+            TIMESTAMP_ERROR,
+            0,
+            960,
+            48000,
+            7_000_000,
+            None,
+            Some(7_000_000),
+        );
+
+        assert_eq!(
+            timestamp_us, 7_000_001,
+            "読み出し時刻も直前のタイムスタンプ以下にならないこと"
+        );
+        assert_eq!(new_anchor, None, "読み出し時刻を補間の基準にしないこと");
+    }
+
+    /// 無音フラグだけが立っている場合は、QPC 位置をそのまま使うこと
+    #[test]
+    fn ignores_silent_flag_when_deciding_timestamp() {
+        let (timestamp_us, new_anchor) =
+            timestamp_for_packet(SILENT, 100_000_000, 480, 48000, 7_000_000, None, None);
+
+        assert_eq!(
+            timestamp_us, 10_000_000,
+            "SILENT フラグはタイムスタンプの決定に影響しないこと"
+        );
+        assert_eq!(
+            new_anchor,
+            Some(anchor(480, 10_000_000)),
             "QPC 位置を使ったパケットを基準にすること"
         );
     }
@@ -696,13 +821,14 @@ mod tests {
     /// デバイス位置の差から補間し、そのパケットを新しい基準にすること
     #[test]
     fn interpolates_timestamp_when_timestamp_has_error() {
-        let (timestamp_us, new_ref) = timestamp_for_packet(
+        let (timestamp_us, new_anchor) = timestamp_for_packet(
             TIMESTAMP_ERROR,
             100_000_000,
             960,
-            Some((480, 1_000_000)),
             48000,
             7_000_000,
+            Some(anchor(480, 1_000_000)),
+            None,
         );
 
         assert_eq!(
@@ -710,9 +836,34 @@ mod tests {
             "48000 Hz で 480 フレーム (10 ms) 後の時刻を補間すること"
         );
         assert_eq!(
-            new_ref,
-            Some((960, 1_010_000)),
+            new_anchor,
+            Some(anchor(960, 1_010_000)),
             "補間したパケットを基準にすること"
+        );
+    }
+
+    /// タイムスタンプエラーがありデバイス位置が変わらない場合は、直前の
+    /// タイムスタンプを返し、そのパケットを基準にすること
+    #[test]
+    fn interpolates_zero_elapsed_frames_when_timestamp_has_error() {
+        let (timestamp_us, new_anchor) = timestamp_for_packet(
+            TIMESTAMP_ERROR,
+            0,
+            480,
+            48000,
+            7_000_000,
+            Some(anchor(480, 1_000_000)),
+            None,
+        );
+
+        assert_eq!(
+            timestamp_us, 1_000_000,
+            "経過フレーム数が 0 のときは直前のタイムスタンプを返すこと"
+        );
+        assert_eq!(
+            new_anchor,
+            Some(anchor(480, 1_000_000)),
+            "同じデバイス位置とタイムスタンプを基準にすること"
         );
     }
 
@@ -720,90 +871,74 @@ mod tests {
     /// 基準を持たないこと
     #[test]
     fn falls_back_to_read_time_when_timestamp_has_error_without_reference() {
-        let (timestamp_us, new_ref) =
-            timestamp_for_packet(TIMESTAMP_ERROR, 100_000_000, 960, None, 48000, 7_000_000);
+        let (timestamp_us, new_anchor) = timestamp_for_packet(
+            TIMESTAMP_ERROR,
+            100_000_000,
+            960,
+            48000,
+            7_000_000,
+            None,
+            None,
+        );
 
         assert_eq!(timestamp_us, 7_000_000, "読み出し時刻を返すこと");
-        assert_eq!(new_ref, None, "読み出し時刻を補間の基準にしないこと");
+        assert_eq!(new_anchor, None, "読み出し時刻を補間の基準にしないこと");
     }
 
     /// データの途切れがあり QPC 位置が使えない場合は、直前の基準をリセットして
     /// 読み出し時刻を返すこと
     #[test]
     fn resets_reference_on_data_discontinuity() {
-        let (timestamp_us, new_ref) = timestamp_for_packet(
+        let (timestamp_us, new_anchor) = timestamp_for_packet(
             TIMESTAMP_ERROR | DATA_DISCONTINUITY,
             100_000_000,
             960,
-            Some((480, 1_000_000)),
             48000,
             7_000_000,
+            Some(anchor(480, 1_000_000)),
+            None,
         );
 
         assert_eq!(timestamp_us, 7_000_000, "補間せず読み出し時刻を返すこと");
-        assert_eq!(new_ref, None, "基準をリセットすること");
+        assert_eq!(new_anchor, None, "基準をリセットすること");
     }
 
     /// データの途切れがあっても QPC 位置が有効なら、QPC 位置を使い、
     /// そのパケットを新しい基準にすること
     #[test]
     fn uses_qpc_position_on_data_discontinuity() {
-        let (timestamp_us, new_ref) = timestamp_for_packet(
+        let (timestamp_us, new_anchor) = timestamp_for_packet(
             DATA_DISCONTINUITY,
             100_000_000,
             960,
-            Some((480, 1_000_000)),
             48000,
             7_000_000,
+            Some(anchor(480, 1_000_000)),
+            None,
         );
 
         assert_eq!(timestamp_us, 10_000_000, "QPC 位置のマイクロ秒を使うこと");
         assert_eq!(
-            new_ref,
-            Some((960, 10_000_000)),
+            new_anchor,
+            Some(anchor(960, 10_000_000)),
             "QPC 位置を使ったパケットを基準にすること"
         );
-    }
-
-    /// QPC 位置が 0 の場合は異常値として扱い、基準があれば補間すること
-    #[test]
-    fn interpolates_when_qpc_position_is_zero() {
-        let (timestamp_us, new_ref) =
-            timestamp_for_packet(0, 0, 960, Some((480, 1_000_000)), 48000, 7_000_000);
-
-        assert_eq!(
-            timestamp_us, 1_010_000,
-            "QPC 位置が 0 でも基準から補間すること"
-        );
-        assert_eq!(
-            new_ref,
-            Some((960, 1_010_000)),
-            "補間したパケットを基準にすること"
-        );
-    }
-
-    /// QPC 位置が 0 で基準もない場合は読み出し時刻を返すこと
-    #[test]
-    fn falls_back_to_read_time_when_qpc_position_is_zero_without_reference() {
-        let (timestamp_us, new_ref) = timestamp_for_packet(0, 0, 960, None, 48000, 7_000_000);
-
-        assert_eq!(timestamp_us, 7_000_000, "読み出し時刻を返すこと");
-        assert_eq!(new_ref, None, "読み出し時刻を補間の基準にしないこと");
     }
 
     /// 補間できない場合は読み出し時刻を返し、基準を持たないこと
     #[test]
     fn falls_back_to_read_time_when_interpolation_fails() {
-        let last_ref = Some((480, 1_000_000));
+        let last_anchor = Some(anchor(480, 1_000_000));
 
         for (sample_rate, device_position) in [(0, 960), (-48000, 960), (48000, 0)] {
-            let (timestamp_us, new_ref) = timestamp_for_packet(
+            let (timestamp_us, new_anchor) = timestamp_for_packet(
                 TIMESTAMP_ERROR,
                 0,
                 device_position,
-                last_ref,
                 sample_rate,
                 7_000_000,
+                last_anchor,
+                None,
             );
 
             assert_eq!(
@@ -811,7 +946,7 @@ mod tests {
                 "sample_rate={sample_rate}, device_position={device_position} のとき読み出し時刻を返すこと"
             );
             assert_eq!(
-                new_ref, None,
+                new_anchor, None,
                 "sample_rate={sample_rate}, device_position={device_position} のとき基準をリセットすること"
             );
         }
@@ -820,20 +955,21 @@ mod tests {
     /// 補間結果が i64 の範囲を超える場合は読み出し時刻を返すこと
     #[test]
     fn falls_back_to_read_time_when_interpolation_overflows() {
-        let (timestamp_us, new_ref) = timestamp_for_packet(
+        let (timestamp_us, new_anchor) = timestamp_for_packet(
             TIMESTAMP_ERROR,
             0,
             48000,
-            Some((0, i64::MAX)),
             48000,
             7_000_000,
+            Some(anchor(0, i64::MAX)),
+            None,
         );
 
         assert_eq!(
             timestamp_us, 7_000_000,
             "オーバーフローする補間値ではなく読み出し時刻を返すこと"
         );
-        assert_eq!(new_ref, None, "基準をリセットすること");
+        assert_eq!(new_anchor, None, "基準をリセットすること");
     }
 
     /// QPC 位置をマイクロ秒へ変換すること
@@ -844,6 +980,11 @@ mod tests {
             qpc_position_to_micros(100_000),
             10_000,
             "100 ナノ秒単位の 10 ms が 10,000 マイクロ秒になること"
+        );
+        assert_eq!(
+            qpc_position_to_micros(15),
+            1,
+            "100 ナノ秒未満の端数は切り捨てること"
         );
         assert_eq!(
             qpc_position_to_micros(u64::MAX),
@@ -859,6 +1000,56 @@ mod tests {
             interpolate_timestamp_us(1_000_000, 480, 960, 48000),
             Some(1_010_000),
             "48000 Hz で 480 フレーム進むと 10 ms になること"
+        );
+    }
+
+    /// デバイス位置が変わらない場合は、直前のタイムスタンプを返すこと
+    #[test]
+    fn returns_last_timestamp_when_elapsed_frames_are_zero() {
+        assert_eq!(
+            interpolate_timestamp_us(1_000_000, 480, 480, 48000),
+            Some(1_000_000),
+            "経過フレーム数が 0 のときは直前のタイムスタンプを返すこと"
+        );
+    }
+
+    /// 直前のタイムスタンプがない場合と、直前より大きい場合はそのまま返すこと
+    #[test]
+    fn keeps_timestamp_when_it_increases() {
+        assert_eq!(
+            clamp_timestamp_us(1_000_000, None),
+            1_000_000,
+            "直前のタイムスタンプがない場合はそのまま返すこと"
+        );
+        assert_eq!(
+            clamp_timestamp_us(1_000_001, Some(1_000_000)),
+            1_000_001,
+            "直前より大きい場合はそのまま返すこと"
+        );
+    }
+
+    /// 直前のタイムスタンプ以下の場合は、直前の値に 1 マイクロ秒を加えた値を返すこと
+    #[test]
+    fn clamps_non_increasing_timestamp() {
+        assert_eq!(
+            clamp_timestamp_us(1_000_000, Some(1_000_000)),
+            1_000_001,
+            "直前と同じ場合は 1 マイクロ秒を加えること"
+        );
+        assert_eq!(
+            clamp_timestamp_us(999_999, Some(1_000_000)),
+            1_000_001,
+            "直前より小さい場合は 1 マイクロ秒を加えること"
+        );
+    }
+
+    /// 直前のタイムスタンプが i64::MAX の場合は i64::MAX を返すこと
+    #[test]
+    fn saturates_clamp_at_i64_max() {
+        assert_eq!(
+            clamp_timestamp_us(i64::MAX, Some(i64::MAX)),
+            i64::MAX,
+            "i64::MAX を超えないこと"
         );
     }
 
