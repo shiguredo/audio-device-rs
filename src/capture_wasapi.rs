@@ -276,6 +276,9 @@ fn capture_thread_func(
         let mut frequency = 0i64;
         let _ = QueryPerformanceFrequency(&mut frequency);
 
+        // タイムスタンプの補間に使う直前のパケットの (デバイス位置, タイムスタンプ)
+        let mut last_ref: Option<(u64, i64)> = None;
+
         while context.running.load(Ordering::Acquire) {
             // イベント待機（10ms タイムアウト）
             let wait_result = WaitForSingleObject(event_handle, 10);
@@ -302,18 +305,36 @@ fn capture_thread_func(
                 let mut data_ptr: *mut u8 = ptr::null_mut();
                 let mut frames_available: u32 = 0;
                 let mut flags: u32 = 0;
+                let mut device_position: u64 = 0;
+                let mut qpc_position: u64 = 0;
                 if capture_client
-                    .GetBuffer(&mut data_ptr, &mut frames_available, &mut flags, None, None)
+                    .GetBuffer(
+                        &mut data_ptr,
+                        &mut frames_available,
+                        &mut flags,
+                        Some(&mut device_position),
+                        Some(&mut qpc_position),
+                    )
                     .is_err()
                 {
                     break;
                 }
 
                 if frames_available > 0 {
-                    // タイムスタンプを取得（マイクロ秒）
+                    // QPC 位置が使えない場合に備えて、読み出し時刻も取得しておく
                     let mut counter = 0i64;
                     let _ = QueryPerformanceCounter(&mut counter);
-                    let timestamp_us = qpc_counter_to_micros(counter, frequency);
+                    let read_time_us = qpc_counter_to_micros(counter, frequency);
+
+                    let (timestamp_us, new_ref) = timestamp_for_packet(
+                        flags,
+                        qpc_position,
+                        device_position,
+                        last_ref,
+                        sample_rate,
+                        read_time_us,
+                    );
+                    last_ref = new_ref;
 
                     // データサイズを計算
                     let bytes_per_sample: usize = match format {
@@ -355,6 +376,79 @@ fn capture_thread_func(
     }
 }
 
+/// パケットのキャプチャ時刻をマイクロ秒で求める。
+///
+/// `last_ref` は直前のパケットの `(デバイス位置, タイムスタンプ)` である。戻り値は
+/// `(タイムスタンプ, 次のパケットへ渡す基準)` の順で、基準は
+/// `(デバイス位置, タイムスタンプ)` である。
+///
+/// QPC 位置が有効な場合はその値をマイクロ秒へ換算して返す。QPC 位置が使えない場合は、
+/// データが途切れていなければ直前の基準からデバイス位置の差を補間する。
+/// 補間できない場合は `read_time_us` を返し、基準を `None` にする。
+fn timestamp_for_packet(
+    flags: u32,
+    qpc_position: u64,
+    device_position: u64,
+    last_ref: Option<(u64, i64)>,
+    sample_rate: i32,
+    read_time_us: i64,
+) -> (i64, Option<(u64, i64)>) {
+    let timestamp_error = (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32) != 0;
+    let data_discontinuity = (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32) != 0;
+
+    // デバイスが記録した QPC 位置が使える場合は、それをパケット先頭の時刻とする
+    if !timestamp_error && qpc_position > 0 {
+        let timestamp_us = qpc_position_to_micros(qpc_position);
+        return (timestamp_us, Some((device_position, timestamp_us)));
+    }
+
+    // QPC 位置が使えず、データが途切れていない場合は、直前の基準から補間する
+    if !data_discontinuity
+        && let Some((last_device_position, last_timestamp_us)) = last_ref
+        && let Some(timestamp_us) = interpolate_timestamp_us(
+            last_timestamp_us,
+            last_device_position,
+            device_position,
+            sample_rate,
+        )
+    {
+        return (timestamp_us, Some((device_position, timestamp_us)));
+    }
+
+    // 読み出し時刻はパケット先頭の音声の時刻ではないため、補間の基準にはしない
+    (read_time_us, None)
+}
+
+/// `IAudioCaptureClient::GetBuffer` が返す QPC 位置をマイクロ秒へ変換する。
+///
+/// QPC 位置は 100 ナノ秒単位なので、10 で割った値をマイクロ秒として返す。
+fn qpc_position_to_micros(qpc_position: u64) -> i64 {
+    // u64::MAX / 10 は i64 の最大値に収まるため、キャストで値が失われない
+    (qpc_position / 10) as i64
+}
+
+/// 直前の基準から、デバイス位置の差に対応する時間を加算したタイムスタンプを求める。
+///
+/// `last_device_position` と `device_position` はサンプルフレーム単位のデバイス位置である。
+/// `sample_rate` が 0 以下、デバイス位置が逆転している、計算結果が `i64` の範囲を超える
+/// 場合は `None` を返す。
+fn interpolate_timestamp_us(
+    last_timestamp_us: i64,
+    last_device_position: u64,
+    device_position: u64,
+    sample_rate: i32,
+) -> Option<i64> {
+    if sample_rate <= 0 || device_position < last_device_position {
+        return None;
+    }
+
+    // フレーム数の差をマイクロ秒へ換算する。u64 の最大値に 1,000,000 を掛けても
+    // i128 の範囲に収まるため、中間計算は i128 で行う
+    let elapsed_frames = (device_position - last_device_position) as i128;
+    let elapsed_us = elapsed_frames * 1_000_000 / (sample_rate as i128);
+    i64::try_from((last_timestamp_us as i128) + elapsed_us).ok()
+}
+
 /// QueryPerformanceCounter が返すカウンター値をマイクロ秒へ変換する。
 ///
 /// `frequency` が 0 以下の場合は無効な値とみなして 0 を返す。
@@ -371,9 +465,21 @@ fn qpc_counter_to_micros(counter: i64, frequency: i64) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_capture_wave_format, qpc_counter_to_micros};
+    use super::{
+        build_capture_wave_format, interpolate_timestamp_us, qpc_counter_to_micros,
+        qpc_position_to_micros, timestamp_for_packet,
+    };
     use crate::error::Error;
-    use windows::Win32::Media::Audio::{WAVE_FORMAT_PCM, WAVEFORMATEX};
+    use windows::Win32::Media::Audio::{
+        AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR,
+        WAVE_FORMAT_PCM, WAVEFORMATEX,
+    };
+
+    /// タイムスタンプが無効であることを示すフラグ
+    const TIMESTAMP_ERROR: u32 = AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32;
+
+    /// データの途切れを示すフラグ
+    const DATA_DISCONTINUITY: u32 = AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32;
 
     /// packed な `WAVEFORMATEX` のフィールドを値として取り出したもの
     struct WaveFormat {
@@ -565,6 +671,220 @@ mod tests {
             qpc_counter_to_micros(1_000_000, -1),
             0,
             "frequency が負のときは 0 を返すこと"
+        );
+    }
+
+    /// タイムスタンプエラーがなく QPC 位置が有効な場合は、QPC 位置のマイクロ秒を
+    /// 使い、そのパケットを次の補間の基準にすること
+    #[test]
+    fn uses_qpc_position_as_timestamp() {
+        let (timestamp_us, new_ref) =
+            timestamp_for_packet(0, 100_000_000, 480, None, 48000, 7_000_000);
+
+        assert_eq!(
+            timestamp_us, 10_000_000,
+            "100 ナノ秒単位の QPC 位置をマイクロ秒に換算すること"
+        );
+        assert_eq!(
+            new_ref,
+            Some((480, 10_000_000)),
+            "QPC 位置を使ったパケットを基準にすること"
+        );
+    }
+
+    /// タイムスタンプエラーがあり基準がある場合は、QPC 位置を使わずに
+    /// デバイス位置の差から補間し、そのパケットを新しい基準にすること
+    #[test]
+    fn interpolates_timestamp_when_timestamp_has_error() {
+        let (timestamp_us, new_ref) = timestamp_for_packet(
+            TIMESTAMP_ERROR,
+            100_000_000,
+            960,
+            Some((480, 1_000_000)),
+            48000,
+            7_000_000,
+        );
+
+        assert_eq!(
+            timestamp_us, 1_010_000,
+            "48000 Hz で 480 フレーム (10 ms) 後の時刻を補間すること"
+        );
+        assert_eq!(
+            new_ref,
+            Some((960, 1_010_000)),
+            "補間したパケットを基準にすること"
+        );
+    }
+
+    /// タイムスタンプエラーがあり基準がない場合は、読み出し時刻を返して
+    /// 基準を持たないこと
+    #[test]
+    fn falls_back_to_read_time_when_timestamp_has_error_without_reference() {
+        let (timestamp_us, new_ref) =
+            timestamp_for_packet(TIMESTAMP_ERROR, 100_000_000, 960, None, 48000, 7_000_000);
+
+        assert_eq!(timestamp_us, 7_000_000, "読み出し時刻を返すこと");
+        assert_eq!(new_ref, None, "読み出し時刻を補間の基準にしないこと");
+    }
+
+    /// データの途切れがあり QPC 位置が使えない場合は、直前の基準をリセットして
+    /// 読み出し時刻を返すこと
+    #[test]
+    fn resets_reference_on_data_discontinuity() {
+        let (timestamp_us, new_ref) = timestamp_for_packet(
+            TIMESTAMP_ERROR | DATA_DISCONTINUITY,
+            100_000_000,
+            960,
+            Some((480, 1_000_000)),
+            48000,
+            7_000_000,
+        );
+
+        assert_eq!(timestamp_us, 7_000_000, "補間せず読み出し時刻を返すこと");
+        assert_eq!(new_ref, None, "基準をリセットすること");
+    }
+
+    /// データの途切れがあっても QPC 位置が有効なら、QPC 位置を使い、
+    /// そのパケットを新しい基準にすること
+    #[test]
+    fn uses_qpc_position_on_data_discontinuity() {
+        let (timestamp_us, new_ref) = timestamp_for_packet(
+            DATA_DISCONTINUITY,
+            100_000_000,
+            960,
+            Some((480, 1_000_000)),
+            48000,
+            7_000_000,
+        );
+
+        assert_eq!(timestamp_us, 10_000_000, "QPC 位置のマイクロ秒を使うこと");
+        assert_eq!(
+            new_ref,
+            Some((960, 10_000_000)),
+            "QPC 位置を使ったパケットを基準にすること"
+        );
+    }
+
+    /// QPC 位置が 0 の場合は異常値として扱い、基準があれば補間すること
+    #[test]
+    fn interpolates_when_qpc_position_is_zero() {
+        let (timestamp_us, new_ref) =
+            timestamp_for_packet(0, 0, 960, Some((480, 1_000_000)), 48000, 7_000_000);
+
+        assert_eq!(
+            timestamp_us, 1_010_000,
+            "QPC 位置が 0 でも基準から補間すること"
+        );
+        assert_eq!(
+            new_ref,
+            Some((960, 1_010_000)),
+            "補間したパケットを基準にすること"
+        );
+    }
+
+    /// QPC 位置が 0 で基準もない場合は読み出し時刻を返すこと
+    #[test]
+    fn falls_back_to_read_time_when_qpc_position_is_zero_without_reference() {
+        let (timestamp_us, new_ref) = timestamp_for_packet(0, 0, 960, None, 48000, 7_000_000);
+
+        assert_eq!(timestamp_us, 7_000_000, "読み出し時刻を返すこと");
+        assert_eq!(new_ref, None, "読み出し時刻を補間の基準にしないこと");
+    }
+
+    /// 補間できない場合は読み出し時刻を返し、基準を持たないこと
+    #[test]
+    fn falls_back_to_read_time_when_interpolation_fails() {
+        let last_ref = Some((480, 1_000_000));
+
+        for (sample_rate, device_position) in [(0, 960), (-48000, 960), (48000, 0)] {
+            let (timestamp_us, new_ref) = timestamp_for_packet(
+                TIMESTAMP_ERROR,
+                0,
+                device_position,
+                last_ref,
+                sample_rate,
+                7_000_000,
+            );
+
+            assert_eq!(
+                timestamp_us, 7_000_000,
+                "sample_rate={sample_rate}, device_position={device_position} のとき読み出し時刻を返すこと"
+            );
+            assert_eq!(
+                new_ref, None,
+                "sample_rate={sample_rate}, device_position={device_position} のとき基準をリセットすること"
+            );
+        }
+    }
+
+    /// 補間結果が i64 の範囲を超える場合は読み出し時刻を返すこと
+    #[test]
+    fn falls_back_to_read_time_when_interpolation_overflows() {
+        let (timestamp_us, new_ref) = timestamp_for_packet(
+            TIMESTAMP_ERROR,
+            0,
+            48000,
+            Some((0, i64::MAX)),
+            48000,
+            7_000_000,
+        );
+
+        assert_eq!(
+            timestamp_us, 7_000_000,
+            "オーバーフローする補間値ではなく読み出し時刻を返すこと"
+        );
+        assert_eq!(new_ref, None, "基準をリセットすること");
+    }
+
+    /// QPC 位置をマイクロ秒へ変換すること
+    #[test]
+    fn converts_qpc_position_to_micros() {
+        assert_eq!(qpc_position_to_micros(0), 0, "0 は 0 マイクロ秒になること");
+        assert_eq!(
+            qpc_position_to_micros(100_000),
+            10_000,
+            "100 ナノ秒単位の 10 ms が 10,000 マイクロ秒になること"
+        );
+        assert_eq!(
+            qpc_position_to_micros(u64::MAX),
+            1_844_674_407_370_955_161,
+            "u64 の最大値でも i64 の範囲に収まること"
+        );
+    }
+
+    /// デバイス位置の差から経過時間を補間すること
+    #[test]
+    fn interpolates_ten_milliseconds() {
+        assert_eq!(
+            interpolate_timestamp_us(1_000_000, 480, 960, 48000),
+            Some(1_010_000),
+            "48000 Hz で 480 フレーム進むと 10 ms になること"
+        );
+    }
+
+    /// サンプルレートが 0 以下、デバイス位置の逆転、計算オーバーフローの場合は
+    /// 補間できないこと
+    #[test]
+    fn rejects_interpolation_when_input_is_invalid() {
+        assert_eq!(
+            interpolate_timestamp_us(1_000_000, 480, 960, 0),
+            None,
+            "sample_rate が 0 のときは補間しないこと"
+        );
+        assert_eq!(
+            interpolate_timestamp_us(1_000_000, 480, 960, -48000),
+            None,
+            "sample_rate が負のときは補間しないこと"
+        );
+        assert_eq!(
+            interpolate_timestamp_us(1_000_000, 960, 480, 48000),
+            None,
+            "デバイス位置が逆転しているときは補間しないこと"
+        );
+        assert_eq!(
+            interpolate_timestamp_us(i64::MAX, 0, 48000, 48000),
+            None,
+            "補間結果が i64 の範囲を超えるときは補間しないこと"
         );
     }
 }

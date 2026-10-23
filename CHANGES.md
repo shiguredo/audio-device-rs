@@ -37,6 +37,9 @@
 - [FIX] WASAPI キャプチャで `AudioCaptureConfig` の `sample_rate` と `channels` を無視する問題を修正する
   - 指定した形式へ変換できない場合は `Error::SessionCreateFailed` を返す
   - @melpon
+- [FIX] WASAPI キャプチャの `AudioFrame.timestamp_us` をパケット先頭フレームのキャプチャ時刻にする
+  - `IAudioCaptureClient::GetBuffer` の QPC 位置を使い、利用できない場合はデバイス位置から補間する
+  - @melpon
 
 ### misc
 
