@@ -211,12 +211,27 @@ pub struct PlaybackFrame {
 }
 
 impl PlaybackFrame {
-    /// S16 データから PlaybackFrame を作成
+    /// S16 データから PlaybackFrame を作成する。
+    ///
+    /// 引数 `data` は、同時刻の各チャンネルのサンプル `channels` 個からなる
+    /// 1 サンプルフレームを順に並べたものとして扱う。戻り値は、引数 `data` の
+    /// 全サンプルを保持する `PlaybackFrame` になる。
+    ///
+    /// # エラー
+    ///
+    /// - `channels` が 0 以下の場合は [`Error::InvalidChannels`] を返す
+    /// - `data` の要素数が `i32` に収まらない場合は [`Error::DataTooLarge`] を返す
+    /// - `data` の要素数が `channels` の倍数でない場合は [`Error::InvalidDataLength`] を返す
     pub fn from_s16(data: &[i16], channels: i32, sample_rate: i32) -> Result<Self> {
         if channels <= 0 {
             return Err(Error::InvalidChannels);
         }
-        let frames = i32::try_from(data.len())? / channels;
+        let sample_count = i32::try_from(data.len())?;
+        // channels の倍数になっているか確認する
+        if !data.len().is_multiple_of(channels as usize) {
+            return Err(Error::InvalidDataLength);
+        }
+        let frames = sample_count / channels;
         let bytes: Vec<u8> = data
             .iter()
             .flat_map(|&sample| sample.to_le_bytes())
@@ -230,12 +245,27 @@ impl PlaybackFrame {
         })
     }
 
-    /// F32 データから PlaybackFrame を作成
+    /// F32 データから PlaybackFrame を作成する。
+    ///
+    /// 引数 `data` は、同時刻の各チャンネルのサンプル `channels` 個からなる
+    /// 1 サンプルフレームを順に並べたものとして扱う。戻り値は、引数 `data` の
+    /// 全サンプルを保持する `PlaybackFrame` になる。
+    ///
+    /// # エラー
+    ///
+    /// - `channels` が 0 以下の場合は [`Error::InvalidChannels`] を返す
+    /// - `data` の要素数が `i32` に収まらない場合は [`Error::DataTooLarge`] を返す
+    /// - `data` の要素数が `channels` の倍数でない場合は [`Error::InvalidDataLength`] を返す
     pub fn from_f32(data: &[f32], channels: i32, sample_rate: i32) -> Result<Self> {
         if channels <= 0 {
             return Err(Error::InvalidChannels);
         }
-        let frames = i32::try_from(data.len())? / channels;
+        let sample_count = i32::try_from(data.len())?;
+        // channels の倍数になっているか確認する
+        if !data.len().is_multiple_of(channels as usize) {
+            return Err(Error::InvalidDataLength);
+        }
+        let frames = sample_count / channels;
         let bytes: Vec<u8> = data
             .iter()
             .flat_map(|&sample| sample.to_le_bytes())

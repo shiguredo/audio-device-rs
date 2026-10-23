@@ -31,6 +31,9 @@
 - [FIX] `write_playback_frame_to_buffer` が `dst_channels` 0 のときゼロ除算でパニックする問題を修正する
   - 変換パスでもフレーム境界に満たないサンプルを書き込まないようにする
   - @melpon
+- [FIX] `PlaybackFrame::from_s16` / `from_f32` でデータ長がチャンネル数の倍数でない場合に `Error::InvalidDataLength` を返すようにする
+  - `frames` と実データ量が食い違う `PlaybackFrame` を生成しないようにする
+  - @melpon
 
 ### misc
 
