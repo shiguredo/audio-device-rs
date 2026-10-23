@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-20
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-23
 - Model: Qwen 3
 - Branch: feature/fix-write-playback-frame-defensive
 - Polished: 2026-07-21
@@ -52,8 +52,15 @@ let copy_frames = copy_len / sample_size; // ゼロ除算 → panic
 
 ## 解決方法
 
-1. 関数冒頭に `if dst_channels == 0 { return 0; }` を追加する（291 行目と 323・343 行目のゼロ除算をまとめて防止する）
-2. 変換パス（F32→S16: 302-323 行目、S16→F32: 328-343 行目）で `copy_len` を `copy_len - (copy_len % dst_channels)` に切り詰めてから変換する（`copy_len` はサンプル数単位、`dst_channels` は 1 フレームあたりのサンプル数（チャネル数）なので、剰余で部分フレームを切り落とせる）
+`src/common.rs` の `write_playback_frame_to_buffer` を次のとおり修正した。
+
+- 関数冒頭で `dst_channels == 0` を検出し、何も書き込まずに 0 を返すようにした。これにより同一フォーマットパスと変換パスの両方でゼロ除算が発生しない
+- F32 → S16 変換と S16 → F32 変換で、書き込み可能なサンプル数を `dst_channels` の倍数に切り下げてから変換するようにした。部分フレームのサンプルは変換せず、未書き込み領域はゼロで埋める
+- 戻り値を切り下げ後のフレーム数に揃えた
+- `src/common.rs` の `#[cfg(test)]` モジュールに `zero_dst_channels_returns_zero`、`same_format_truncates_partial_frame`、`s16_to_f32_truncates_partial_frame` を追加し、`f32_to_s16_truncates_partial_frame` を部分フレームが書き込まれないことを検証する内容に強化した
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追記した
+
+`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` がすべて成功することを確認した。
 
 ## 後方互換
 

@@ -28,6 +28,9 @@
   - @melpon
 - [FIX] WASAPI 再生で `GetBuffer` 失敗時にコールバックが取得したフレームデータが破棄される問題を修正する
   - @melpon
+- [FIX] `write_playback_frame_to_buffer` が `dst_channels` 0 のときゼロ除算でパニックする問題を修正する
+  - 変換パスでもフレーム境界に満たないサンプルを書き込まないようにする
+  - @melpon
 
 ### misc
 
