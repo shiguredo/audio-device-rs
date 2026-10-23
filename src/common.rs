@@ -277,8 +277,9 @@ impl Default for AudioPlaybackConfig {
 /// 再生フレームのバイトデータを、指定先フォーマットに変換してバッファに書き込む。
 ///
 /// フォーマットが一致する場合はそのままコピー、異なる場合は変換する。
+/// フレーム境界に満たない末尾のサンプルは書き込まない。
 /// バッファに満たない部分はゼロで埋める。
-/// 書き込んだフレーム数を返す。
+/// 書き込んだフレーム数を返す。`dst_channels` が 0 の場合は何も書き込まずに 0 を返す。
 #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire, enable_wasapi))]
 pub(crate) fn write_playback_frame_to_buffer(
     src_data: &[u8],
@@ -287,6 +288,10 @@ pub(crate) fn write_playback_frame_to_buffer(
     dst_format: AudioFormat,
     dst_channels: usize,
 ) -> i32 {
+    if dst_channels == 0 {
+        return 0;
+    }
+
     match (src_format, dst_format) {
         (AudioFormat::S16, AudioFormat::S16) | (AudioFormat::F32, AudioFormat::F32) => {
             // 同一フォーマットの場合はそのままコピーする
@@ -306,7 +311,9 @@ pub(crate) fn write_playback_frame_to_buffer(
             // Vec<u8> のアライメントは 1 なので read_unaligned / write_unaligned で読み書きする
             let src_count = src_data.len() / 4;
             let dst_count = dst.len() / 2;
-            let copy_len = src_count.min(dst_count);
+            // 書き込み可能なサンプル数をチャネル数の倍数に切り下げる
+            let copy_frames = src_count.min(dst_count) / dst_channels;
+            let copy_len = copy_frames * dst_channels;
             let src_ptr = src_data.as_ptr() as *const f32;
             unsafe {
                 let dst_ptr = dst.as_mut_ptr() as *mut i16;
@@ -325,14 +332,16 @@ pub(crate) fn write_playback_frame_to_buffer(
                     dst[written_bytes..].fill(0);
                 }
             }
-            (copy_len as i32) / dst_channels as i32
+            copy_frames as i32
         }
         (AudioFormat::S16, AudioFormat::F32) => {
             // S16 → F32 変換
             // Vec<u8> のアライメントは 1 なので read_unaligned / write_unaligned で読み書きする
             let src_count = src_data.len() / 2;
             let dst_count = dst.len() / 4;
-            let copy_len = src_count.min(dst_count);
+            // 書き込み可能なサンプル数をチャネル数の倍数に切り下げる
+            let copy_frames = src_count.min(dst_count) / dst_channels;
+            let copy_len = copy_frames * dst_channels;
             let src_ptr = src_data.as_ptr() as *const i16;
             unsafe {
                 let dst_ptr = dst.as_mut_ptr() as *mut f32;
@@ -345,7 +354,7 @@ pub(crate) fn write_playback_frame_to_buffer(
                     dst[written_bytes..].fill(0);
                 }
             }
-            (copy_len as i32) / dst_channels as i32
+            copy_frames as i32
         }
     }
 }
@@ -356,6 +365,31 @@ pub(crate) fn write_playback_frame_to_buffer(
 ))]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // 入力検証
+    // -----------------------------------------------------------------------
+
+    /// dst_channels が 0 の場合は何も書き込まずに 0 を返す
+    #[test]
+    fn zero_dst_channels_returns_zero() {
+        // 同一フォーマットと変換のすべての組み合わせで 0 が返ることを確認する
+        for (src_format, dst_format) in [
+            (AudioFormat::S16, AudioFormat::S16),
+            (AudioFormat::F32, AudioFormat::F32),
+            (AudioFormat::F32, AudioFormat::S16),
+            (AudioFormat::S16, AudioFormat::F32),
+        ] {
+            let src_data = [0u8; 16];
+            let mut dst = [0xCCu8; 16];
+            let frames =
+                write_playback_frame_to_buffer(&src_data, src_format, &mut dst, dst_format, 0);
+            assert_eq!(
+                frames, 0,
+                "src={src_format:?}, dst={dst_format:?} では 0 を返すこと"
+            );
+        }
+    }
 
     // -----------------------------------------------------------------------
     // 同一フォーマット (S16 → S16 / F32 → F32)
@@ -371,6 +405,35 @@ mod tests {
         assert!(
             dst.iter().all(|&b| b == 0),
             "バッファ全体がゼロ埋めされること"
+        );
+    }
+
+    /// 同一フォーマットのコピーでもフレーム境界に満たないサンプルは書き込まない
+    #[test]
+    fn same_format_truncates_partial_frame() {
+        // 3ch 分の S16 データ 7 サンプル (2 フレーム + 1 サンプル)
+        let src: Vec<i16> = vec![100, 200, 300, 400, 500, 600, 700];
+        let src_bytes: Vec<u8> = src.iter().flat_map(|s| s.to_le_bytes()).collect();
+        // 3ch 分の S16 バッファ (7 サンプルぶん)
+        let mut dst = vec![0xCCu8; 14];
+        let frames = write_playback_frame_to_buffer(
+            &src_bytes,
+            AudioFormat::S16,
+            &mut dst,
+            AudioFormat::S16,
+            3,
+        );
+        assert_eq!(frames, 2, "7 / 3 = 2 フレームに切り捨てられること");
+        // 2 フレーム (6 サンプル) ぶんだけコピーされる
+        assert_eq!(
+            &dst[..12],
+            &src_bytes[..12],
+            "完全なフレームのデータはコピーされること"
+        );
+        // 7 サンプル目と、その後ろのバッファはゼロで埋められる
+        assert!(
+            dst[12..].iter().all(|&b| b == 0),
+            "部分フレームのサンプルが書き込まれないこと"
         );
     }
 
@@ -390,11 +453,56 @@ mod tests {
             3,
         );
         assert_eq!(frames, 2, "7 / 3 = 2 フレームに切り捨てられること");
-        // 先頭 2 サンプルだけ検証する (3 サンプル目はフレームに満たない)
-        let written0 = i16::from_le_bytes([dst[0], dst[1]]);
-        let written1 = i16::from_le_bytes([dst[2], dst[3]]);
-        assert_eq!(written0, 0);
-        assert_eq!(written1, 8191);
+        // 完全な 2 フレーム (6 サンプル) ぶんだけ変換される
+        let expected: [i16; 6] = [0, 8191, -8191, 16383, -16383, 32767];
+        for (i, exp) in expected.iter().enumerate() {
+            let offset = i * 2;
+            let written = i16::from_le_bytes([dst[offset], dst[offset + 1]]);
+            assert_eq!(written, *exp, "サンプル {i} が一致しない");
+        }
+        // 7 サンプル目は 1 フレームに満たないため変換されず、ゼロで埋められる
+        assert!(
+            dst[12..].iter().all(|&b| b == 0),
+            "部分フレームのサンプルが書き込まれないこと"
+        );
+    }
+
+    /// S16 → F32 変換でもフレーム境界に満たないサンプルは変換しない
+    #[test]
+    fn s16_to_f32_truncates_partial_frame() {
+        // 3ch 分の S16 データ 7 サンプル (2 フレーム + 1 サンプル)
+        let src: Vec<i16> = vec![0, 1000, -1000, 2000, -2000, 3000, -3000];
+        let src_bytes: Vec<u8> = src.iter().flat_map(|s| s.to_le_bytes()).collect();
+        // 3ch 分の F32 バッファ (7 サンプルぶん)
+        let mut dst = vec![0xCCu8; 28];
+        let frames = write_playback_frame_to_buffer(
+            &src_bytes,
+            AudioFormat::S16,
+            &mut dst,
+            AudioFormat::F32,
+            3,
+        );
+        assert_eq!(frames, 2, "7 / 3 = 2 フレームに切り捨てられること");
+        // 完全な 2 フレーム (6 サンプル) ぶんだけ変換される
+        for (i, sample) in src[..6].iter().enumerate() {
+            let offset = i * 4;
+            let written = f32::from_le_bytes([
+                dst[offset],
+                dst[offset + 1],
+                dst[offset + 2],
+                dst[offset + 3],
+            ]);
+            let expected = *sample as f32 / 32768.0;
+            assert!(
+                (written - expected).abs() < 1e-7,
+                "サンプル {i}: 期待 {expected}, 実際 {written}"
+            );
+        }
+        // 7 サンプル目と、その後ろのバッファはゼロで埋められる
+        assert!(
+            dst[24..].iter().all(|&b| b == 0),
+            "部分フレームのサンプルが書き込まれないこと"
+        );
     }
 
     /// F32 → F32 の同一フォーマットで不足分がゼロ埋めされる
