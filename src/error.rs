@@ -21,6 +21,8 @@ pub enum Error {
     NullPointer(&'static str),
     /// チャンネル数が 0 以下
     InvalidChannels,
+    /// デバイス ID に NUL バイトが含まれている
+    InvalidDeviceId,
     /// データ長が i32 に収まらない
     DataTooLarge(std::num::TryFromIntError),
     /// 未知のオーディオフォーマット値
@@ -42,6 +44,9 @@ impl fmt::Display for Error {
             ),
             Error::NullPointer(name) => write!(f, "null pointer: {}", name),
             Error::InvalidChannels => write!(f, "invalid channels: must be greater than 0"),
+            Error::InvalidDeviceId => {
+                write!(f, "invalid device id: must not contain a null byte")
+            }
             Error::DataTooLarge(e) => write!(f, "data too large: {}", e),
             Error::UnknownFormat(v) => write!(f, "unknown audio format: {}", v),
             Error::UnknownDeviceType(v) => write!(f, "unknown audio device type: {}", v),

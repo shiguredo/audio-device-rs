@@ -11,6 +11,8 @@
 
 ## develop
 
+- [CHANGE] macOS / Linux で NUL バイトを含むデバイス ID を指定した場合に `Error::NullPointer` ではなく `Error::InvalidDeviceId` を返すようにする
+  - @melpon
 - [CHANGE] Windows ではライブラリを利用するスレッドの先頭で `initialize_thread()` を呼ぶ必要があるようにする
   - @melpon
 - [FIX] `Cargo.toml` の `windows` 依存を MSRV 1.93 の cargo が解釈できる形式に修正する
