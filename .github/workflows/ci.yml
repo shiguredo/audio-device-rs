@@ -12,6 +12,7 @@ jobs:
   ci:
     name: CI (${{ matrix.name }})
     strategy:
+      fail-fast: false
       matrix:
         include:
           - name: Ubuntu (pulse)
@@ -31,7 +32,7 @@ jobs:
             cargo-flags: ""
             virtual-audio: none
           - name: Windows
-            os: windows-2025
+            os: windows-2025-vs2026
             cargo-flags: ""
             virtual-audio: none
     runs-on: ${{ matrix.os }}
@@ -61,12 +62,15 @@ jobs:
 
           export XDG_RUNTIME_DIR="$RUNNER_TEMP/audio-runtime"
           export PIPEWIRE_RUNTIME_DIR="$XDG_RUNTIME_DIR"
-          export PULSE_SERVER="unix:$XDG_RUNTIME_DIR/pulse/native"
           mkdir -p "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
 
           if [ "${{ matrix.virtual-audio }}" = "pulse" ]; then
+            # PULSE_SERVER が設定されていると pulseaudio が自分で起動しなくなる
+            unset PULSE_SERVER
             pulseaudio --start --exit-idle-time=-1
+            export PULSE_SERVER="unix:$XDG_RUNTIME_DIR/pulse/native"
+            sleep 1
             pactl load-module module-null-sink sink_name=ci_dummy_sink rate=48000 channels=2
             pactl load-module module-virtual-source source_name=ci_dummy_source master=ci_dummy_sink.monitor
             pactl set-default-sink ci_dummy_sink
