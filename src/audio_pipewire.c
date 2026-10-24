@@ -73,16 +73,19 @@ static void enum_registry_global(void* data, uint32_t id,
         return;
     }
 
-    // Audio/Source と Audio/Sink を対象にする (monitor を除外する)
+    // Audio/Source と Audio/Sink を対象にする。仮想デバイスを表す
+    // Audio/Source/Virtual と Audio/Sink/Virtual も対象に含める。
     const char* media_class = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS);
     if (!media_class) {
         return;
     }
 
     int device_type;
-    if (strcmp(media_class, "Audio/Source") == 0) {
+    if (strcmp(media_class, "Audio/Source") == 0 ||
+        strcmp(media_class, "Audio/Source/Virtual") == 0) {
         device_type = AUDIO_DEVICE_TYPE_INPUT;
-    } else if (strcmp(media_class, "Audio/Sink") == 0) {
+    } else if (strcmp(media_class, "Audio/Sink") == 0 ||
+               strcmp(media_class, "Audio/Sink/Virtual") == 0) {
         device_type = AUDIO_DEVICE_TYPE_OUTPUT;
     } else {
         return;

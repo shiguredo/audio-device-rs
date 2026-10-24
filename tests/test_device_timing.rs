@@ -22,7 +22,7 @@ use shiguredo_audio_device::{
 };
 
 /// 各入力デバイスでキャプチャを続ける時間。
-const CAPTURE_DURATION: Duration = Duration::from_secs(2);
+const CAPTURE_DURATION: Duration = Duration::from_secs(5);
 
 /// 各出力デバイスで再生を続ける時間。
 const PLAYBACK_DURATION: Duration = Duration::from_secs(3);

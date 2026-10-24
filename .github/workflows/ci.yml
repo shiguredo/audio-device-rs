@@ -17,18 +17,23 @@ jobs:
           - name: Ubuntu (pulse)
             os: ubuntu-24.04
             cargo-flags: ""
+            virtual-audio: pulse
           - name: Ubuntu (pipewire)
             os: ubuntu-24.04
             cargo-flags: "--no-default-features --features default-pipewire"
+            virtual-audio: pipewire
           - name: Ubuntu ARM (pulse)
             os: ubuntu-24.04-arm
             cargo-flags: ""
+            virtual-audio: pulse
           - name: macOS
             os: macos-26
             cargo-flags: ""
+            virtual-audio: none
           - name: Windows
             os: windows-2025
             cargo-flags: ""
+            virtual-audio: none
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -42,13 +47,57 @@ jobs:
           toolchain: "1.93"
       - name: Install Linux dependencies (pulse)
         if: runner.os == 'Linux' && !contains(matrix.cargo-flags, 'pipewire')
-        run: sudo apt-get update && sudo apt-get install -y libpulse-dev libclang-dev
+        run: sudo apt-get update && sudo apt-get install -y libpulse-dev libclang-dev pulseaudio pulseaudio-utils
       - name: Install Linux dependencies (pipewire)
         if: runner.os == 'Linux' && contains(matrix.cargo-flags, 'pipewire')
-        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev libclang-dev
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev libclang-dev pipewire wireplumber
       - run: cargo fmt --all --check
       - run: cargo check --workspace ${{ matrix.cargo-flags }}
-      - run: cargo test --workspace ${{ matrix.cargo-flags }}
+      - name: Run cargo test (Linux with virtual audio)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -e
+
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/audio-runtime"
+          export PIPEWIRE_RUNTIME_DIR="$XDG_RUNTIME_DIR"
+          export PULSE_SERVER="unix:$XDG_RUNTIME_DIR/pulse/native"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+
+          if [ "${{ matrix.virtual-audio }}" = "pulse" ]; then
+            pulseaudio --start --exit-idle-time=-1
+            pactl load-module module-null-sink sink_name=ci_dummy_sink rate=48000 channels=2
+            pactl load-module module-virtual-source source_name=ci_dummy_source master=ci_dummy_sink.monitor
+            pactl set-default-sink ci_dummy_sink
+            pactl set-default-source ci_dummy_source
+            pacat --playback --raw --format=s16le --rate=48000 --channels=2 --device=ci_dummy_sink < /dev/zero >/dev/null 2>&1 &
+            feeder_pid=$!
+            sleep 1
+          else
+            pipewire >"$RUNNER_TEMP/pipewire.log" 2>&1 &
+            pipewire_pid=$!
+            wireplumber >"$RUNNER_TEMP/wireplumber.log" 2>&1 &
+            wireplumber_pid=$!
+            sleep 2
+            pw-cli create-node adapter '{ factory.name=support.null-audio-sink node.name=ci_dummy_sink media.class=Audio/Sink object.linger=true audio.position=[FL,FR] }'
+            pw-cli create-node adapter '{ factory.name=support.null-audio-sink node.name=ci_dummy_source media.class=Audio/Source/Virtual object.linger=true audio.position=[FL,FR] }'
+            sleep 1
+          fi
+
+          set +e
+          cargo test --workspace ${{ matrix.cargo-flags }}
+          status=$?
+          set -e
+
+          if [ -n "${feeder_pid:-}" ]; then kill "$feeder_pid" 2>/dev/null || true; fi
+          if [ -n "${wireplumber_pid:-}" ]; then kill "$wireplumber_pid" 2>/dev/null || true; fi
+          if [ -n "${pipewire_pid:-}" ]; then kill "$pipewire_pid" 2>/dev/null || true; fi
+          if [ "${{ matrix.virtual-audio }}" = "pulse" ]; then pulseaudio --kill 2>/dev/null || true; fi
+          exit "$status"
+      - name: Run cargo test (non-Linux)
+        if: runner.os != 'Linux'
+        run: cargo test --workspace ${{ matrix.cargo-flags }}
       - run: cargo clippy --workspace ${{ matrix.cargo-flags }} -- -D warnings
 
   device-test:
