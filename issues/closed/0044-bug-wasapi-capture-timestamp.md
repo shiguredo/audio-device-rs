@@ -1,7 +1,7 @@
 # WASAPI キャプチャの timestamp が読み出し時刻になっている
 
 - Created: 2026-10-19
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-24
 - Branch: feature/fix-wasapi-capture-timestamp
 - Polished: 2026-10-19
 
@@ -30,19 +30,23 @@ Windows (WASAPI) の音声キャプチャで、`AudioFrame.timestamp_us` をパ�
 
 ## 設計方針
 
-- `capture_thread_func` の `GetBuffer` 呼び出しで、第 4 引数 `pu64DevicePosition` と第 5 引数 `pu64QPCPosition` の両方を受け取る。`qpc_position` は 0、`last_ref` は `None` で初期化する
+- `capture_thread_func` の `GetBuffer` 呼び出しで、第 4 引数 `pu64DevicePosition` と第 5 引数 `pu64QPCPosition` の両方を受け取る。`qpc_position` は 0、`last_anchor` と `last_timestamp_us` は `None` で初期化する
 - `pu64QPCPosition` は API が 100 ナノ秒単位へ換算済みの値である。`QueryPerformanceFrequency` を使った再換算はせず、`qpc_position / 10` をマイクロ秒として使う
+- `TimestampAnchor` は補間に使う直前のパケットの基準を表す。`device_position: u64` はストリーム開始からのサンプルフレーム数、`timestamp_us: i64` はそのパケット先頭のキャプチャ時刻 (マイクロ秒) である
 - パケットごとの timestamp 決定を純粋関数 `timestamp_for_packet` へ切り出す。引数は `flags: u32`, `qpc_position: u64`, `device_position: u64`,
-  `last_ref: Option<(u64, i64)>` (`(device_position, timestamp_us)` の順), `sample_rate: i32`, `read_time_us: i64`、戻り値は
-  `(timestamp_us: i64, new_ref: Option<(u64, i64)>)` (`new_ref` も `(device_position, timestamp_us)` の順) とする
+  `sample_rate: i32`, `read_time_us: i64`, `last_anchor: Option<TimestampAnchor>`, `last_timestamp_us: Option<i64>`、戻り値は
+  `(timestamp_us: i64, new_anchor: Option<TimestampAnchor>)` とする
+- `last_timestamp_us` は `capture_thread_func` がコールバックへ渡した直前のパケットのタイムスタンプである
 - `read_time_us` は `QueryPerformanceCounter` と `qpc_counter_to_micros` で計算し、`timestamp_for_packet` に渡す
 - `timestamp_for_packet` の決定規則:
-  - `AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR` が立っておらず `qpc_position > 0` の場合: `qpc_position_to_micros(qpc_position)` を timestamp にし、`(device_position, timestamp_us)` を新しい基準にする
-  - `AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR` が立つ場合、または `qpc_position == 0` の場合:
-    `AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY` が立っておらず直前の基準 `last_ref` があるなら `interpolate_timestamp_us` で補間する。
+  - `AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR` が立っていない場合: `qpc_position_to_micros(qpc_position)` を timestamp にし、`TimestampAnchor { device_position, timestamp_us }` を新しい基準にする
+  - `AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR` が立つ場合:
+    `AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY` が立っておらず直前の基準 `last_anchor` があるなら `interpolate_timestamp_us` で補間する。
     基準がない、`sample_rate <= 0`、`device_position < last_device_position`、計算オーバーフローの場合は読み出し時刻 (`read_time_us`) へフォールバックし、基準を `None` にする
-  - `AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY` が立つ場合: 基準をリセットする。`AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR` が立っておらず `qpc_position > 0` なら QPC を使い、そうでなければ読み出し時刻へフォールバックする
+  - `AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY` が立つ場合: 基準をリセットする。`AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR` が立っていなければ QPC を使い、そうでなければ読み出し時刻へフォールバックする
   - 読み出し時刻へフォールバックしたパケットでは基準を更新しない (基準を読み出し時刻で汚染しないため)
+- `qpc_position` の有効性は `AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR` だけで判定する。`qpc_position == 0` は特別扱いしない
+- `timestamp_for_packet` は、戻り値の `timestamp_us` が `last_timestamp_us` 以下にならないよう、必要なら直前の値 + 1 マイクロ秒にクランプする。基準の `TimestampAnchor.timestamp_us` はクランプ前の音声時刻のままにする
 - `qpc_position_to_micros(qpc_position: u64) -> i64` は `(qpc_position / 10) as i64` を返す。`u64::MAX / 10` は `i64` の範囲に収まる
 - `interpolate_timestamp_us(last_timestamp_us: i64, last_device_position: u64, device_position: u64, sample_rate: i32) -> Option<i64>` は、
   `sample_rate <= 0`、`device_position < last_device_position`、計算オーバーフローの場合に `None` を返す
@@ -64,12 +68,13 @@ Windows (WASAPI) の音声キャプチャで、`AudioFrame.timestamp_us` をパ�
 ## 完了条件
 
 - `timestamp_for_packet` の単体テストが追加され、次の分岐を固定していること:
-  - 通常時 (`AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR` なし、`qpc_position > 0`): `qpc_position / 10` を返し、基準を更新する
+  - 通常時 (`AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR` なし): `qpc_position / 10` を返し、基準を更新する
   - `AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR` あり、基準あり: 補間値を返し、基準を更新する
   - `AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR` あり、基準なし: 読み出し時刻を返し、基準を `None` にする
   - `AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY` あり: 基準をリセットし、QPC が有効なら QPC、そうでなければ読み出し時刻を返す
-  - `qpc_position == 0`: 異常値として補間または読み出し時刻へフォールバックする
   - `sample_rate <= 0`、`device_position < last_device_position`、計算オーバーフロー: 読み出し時刻を返す
+- `timestamp_for_packet` の単体テストで、戻り値の `timestamp_us` が `last_timestamp_us` 以下にならず、基準の `timestamp_us` はクランプ前の音声時刻のままであること
+- `clamp_timestamp_us` の単体テストが追加され、直前の値がない場合、直前より大きい場合、直前以下の場合、`i64::MAX` で正しい値を返すこと
 - `qpc_position_to_micros` の単体テストが追加され、0、10 ms、`u64::MAX` で正しいマイクロ秒を返すこと
 - `interpolate_timestamp_us` の単体テストが追加され、正常な 10 ms 間隔、`sample_rate <= 0`、`device_position` の逆転、計算オーバーフローで `None` を返すこと
 - `qpc_counter_to_micros` の既存テスト (`returns_zero_when_frequency_is_not_positive` など) が維持されていること
@@ -81,8 +86,10 @@ Windows (WASAPI) の音声キャプチャで、`AudioFrame.timestamp_us` をパ�
 
 ## 解決方法
 
-- `capture_thread_func` の `GetBuffer` 呼び出しで `pu64DevicePosition` と `pu64QPCPosition` を受け取り、`timestamp_us` に使う
-- `timestamp_for_packet`、`qpc_position_to_micros`、`interpolate_timestamp_us` を純粋関数として追加し、単体テストを追加する
-- `AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR` と `AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY` の扱いを実装する
+- `capture_thread_func` の `GetBuffer` 呼び出しで `pu64DevicePosition` と `pu64QPCPosition` を受け取り、`qpc_position / 10` を `timestamp_us` に使う
+- パケットごとの timestamp 決定を `timestamp_for_packet` に切り出し、`qpc_position_to_micros` と `interpolate_timestamp_us` を追加する
+- `AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR` と `AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY` の扱いを実装する。`qpc_position` の有効性は `TIMESTAMP_ERROR` だけで判定する
+- `TimestampAnchor` で直前のパケットの基準を表し、`timestamp_for_packet` 内で `clamp_timestamp_us` によりタイムスタンプの単調性を保証する
+- 上記の分岐とクランプの単体テストを追加する
 - `qpc_counter_to_micros` は読み出し時刻へのフォールバック用として残す
-- Windows 実機で「Windows 実機での確認手順」を実施する
+- Windows 実機で 5 秒間のキャプチャを行い、通常時と burst 読み出しで `timestamp_us` が音声時間と一致することを確認する
