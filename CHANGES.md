@@ -18,8 +18,6 @@
 - [CHANGE] `Error::InvalidAudioFormat` を追加する
   - WASAPI で指定したサンプルレートやチャンネル数が音声形式として表現できない場合は `Error::SessionCreateFailed` ではなく `Error::InvalidAudioFormat` を返す
   - @melpon
-- [ADD] PipeWire の仮想オーディオデバイス (`Audio/Source/Virtual` と `Audio/Sink/Virtual`) を列挙対象に追加する
-  - @melpon
 - [FIX] `Cargo.toml` の `windows` 依存を MSRV 1.93 の cargo が解釈できる形式に修正する
   - @voluntas
 - [FIX] examples が `--no-default-features` でビルドできない問題を修正する
@@ -56,6 +54,9 @@
   - @melpon
 - [FIX] PipeWire キャプチャの `AudioFrame.timestamp_us` をバッファのキャプチャ時刻にする
   - `pw_buffer.time` を使い、利用できない場合はストリーム時刻へフォールバックする
+  - @melpon
+- [FIX] デバイスが 0 件のときに `Error::DeviceAccessDenied` を返す問題を修正する
+  - 空のデバイスリストを正常な結果として返す
   - @melpon
 
 ### misc
