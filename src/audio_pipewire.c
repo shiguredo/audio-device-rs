@@ -34,6 +34,10 @@ struct AudioSession {
     int sample_rate;
     int channels;
     atomic_int running;
+    // 直前にコールバックへ渡したバッファのタイムスタンプとフレーム数
+    int64_t last_timestamp_us;
+    int last_frames;
+    int has_last_timestamp;
 };
 
 // デバイス列挙用のコンテキスト
@@ -278,6 +282,51 @@ int audio_pipewire_device_type(struct AudioDevice* device) {
     return device->device_type;
 }
 
+// 現在のストリーム時刻をマイクロ秒で返す
+static int64_t stream_time_us(struct AudioSession* session) {
+#if PW_CHECK_VERSION(1, 0, 4)
+    return (int64_t)(pw_stream_get_nsec(session->stream) / 1000);
+#else
+    // pw_stream_get_nsec() を利用できないビルドではモノトニック時刻を使う
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+#endif
+}
+
+// キャプチャバッファの先頭フレームの録音時刻をマイクロ秒で求める。
+//
+// pw_buffer.time は PipeWire がバッファをストリームへ渡したときのサイクル時刻
+// (ナノ秒) であり、pw_stream_get_nsec() と同じクロックで比較できる。time が 0 の
+// 場合は、直前のバッファの音声時間だけ進めた時刻か、ストリーム時刻へフォールバック
+// する。
+//
+// 戻り値は直前のバッファのタイムスタンプより必ず大きくなる。
+static int64_t capture_timestamp_us(struct AudioSession* session,
+                                    uint64_t buffer_time_ns, int frames) {
+    int64_t timestamp_us;
+    if (buffer_time_ns > 0) {
+        timestamp_us = (int64_t)(buffer_time_ns / 1000);
+    } else if (session->has_last_timestamp && session->sample_rate > 0) {
+        // サイクル時刻を取得できない場合は、直前のバッファの音声時間だけ進める
+        timestamp_us = session->last_timestamp_us +
+                       (int64_t)session->last_frames * 1000000 /
+                           session->sample_rate;
+    } else {
+        timestamp_us = stream_time_us(session);
+    }
+
+    if (session->has_last_timestamp && timestamp_us <= session->last_timestamp_us) {
+        timestamp_us = session->last_timestamp_us + 1;
+    }
+
+    session->last_timestamp_us = timestamp_us;
+    session->has_last_timestamp = 1;
+    session->last_frames = frames;
+
+    return timestamp_us;
+}
+
 // ストリームの process コールバック
 static void on_process(void* userdata) {
     struct AudioSession* session = userdata;
@@ -302,15 +351,18 @@ static void on_process(void* userdata) {
     uint32_t size = spa_buf->datas[0].chunk->size;
 
     if (size > 0 && session->callback) {
-        int bytes_per_sample = 2;  // S16
+        int bytes_per_sample = 2;  // S16 の 1 サンプルは 2 バイト
         int frame_size = bytes_per_sample * session->channels;
         int frames = (int)(size / frame_size);
 
         if (frames > 0) {
-            struct timespec ts;
-            clock_gettime(CLOCK_MONOTONIC, &ts);
+#if PW_CHECK_VERSION(1, 0, 5)
             int64_t timestamp_us =
-                (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+                capture_timestamp_us(session, buf->time, frames);
+#else
+            // pw_buffer.time を利用できないビルドではストリーム時刻を使う
+            int64_t timestamp_us = capture_timestamp_us(session, 0, frames);
+#endif
 
             session->callback(session->user_data, data, frames,
                               session->channels, session->sample_rate,
@@ -455,6 +507,9 @@ int audio_pipewire_session_start(struct AudioSession* session,
     if (atomic_load(&session->running)) {
         return 0;
     }
+
+    // 前回のストリームのタイムスタンプを引き継がないよう、開始時に状態をリセットする
+    session->has_last_timestamp = 0;
 
     session->callback = callback;
     session->user_data = user_data;
