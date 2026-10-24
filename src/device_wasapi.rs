@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 
 use windows::{
     Win32::Devices::FunctionDiscovery::*, Win32::Foundation::*, Win32::Media::Audio::*,
-    Win32::Media::KernelStreaming::*, Win32::Media::Multimedia::*, Win32::System::Com::*,
+    Win32::Media::Multimedia::WAVE_FORMAT_IEEE_FLOAT, Win32::System::Com::*,
     Win32::System::Variant::*, Win32::UI::Shell::PropertiesSystem::*, core::*,
 };
 
@@ -216,26 +216,46 @@ fn get_device_format(device: &IMMDevice) -> Option<(i32, i32)> {
     }
 }
 
-/// オーディオフォーマットを判定
-pub(crate) unsafe fn determine_audio_format(wave_format: *const WAVEFORMATEX) -> AudioFormat {
-    let format_tag = unsafe { (*wave_format).wFormatTag };
-
-    // WAVE_FORMAT_IEEE_FLOAT の場合は F32 と判定する
-    if format_tag == WAVE_FORMAT_IEEE_FLOAT as u16 {
-        return AudioFormat::F32;
+/// 指定した形式・サンプルレート・チャンネル数の `WAVEFORMATEX` を構築する。
+///
+/// # エラー
+///
+/// - `sample_rate` または `channels` が 0 の場合
+/// - 1 サンプルフレームあたりのバイト数が `WAVEFORMATEX` の `u16` フィールドに収まらない場合
+/// - 1 秒あたりのバイト数が `WAVEFORMATEX` の `u32` フィールドに収まらない場合
+///
+/// はいずれも [`Error::InvalidAudioFormat`] を返す。
+pub(crate) fn build_wave_format(
+    format: AudioFormat,
+    sample_rate: u32,
+    channels: u16,
+) -> Result<WAVEFORMATEX> {
+    // サンプルレートとチャンネル数は音声形式として 1 以上が必要なので、0 は拒否する
+    if sample_rate == 0 || channels == 0 {
+        return Err(Error::InvalidAudioFormat);
     }
 
-    // WAVE_FORMAT_EXTENSIBLE の場合は SubFormat GUID を確認する
-    if format_tag == WAVE_FORMAT_EXTENSIBLE as u16 {
-        let ext = wave_format as *const WAVEFORMATEXTENSIBLE;
-        let sub_format = unsafe { std::ptr::addr_of!((*ext).SubFormat).read_unaligned() };
-        if sub_format == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
-            return AudioFormat::F32;
-        }
-    }
+    // 1 サンプルあたりのバイト数は形式ごとに決まる。乗算がオーバーフローしないよう
+    // u64 で計算してから各フィールドの型に変換する
+    let block_align = u64::from(channels) * format.bytes_per_sample() as u64;
+    let block_align = u16::try_from(block_align).map_err(|_| Error::InvalidAudioFormat)?;
+    let avg_bytes_per_sec = u64::from(sample_rate) * u64::from(block_align);
+    let avg_bytes_per_sec =
+        u32::try_from(avg_bytes_per_sec).map_err(|_| Error::InvalidAudioFormat)?;
+    let (format_tag, bits_per_sample) = match format {
+        AudioFormat::S16 => (WAVE_FORMAT_PCM as u16, 16),
+        AudioFormat::F32 => (WAVE_FORMAT_IEEE_FLOAT as u16, 32),
+    };
 
-    // それ以外は全て S16 として扱う
-    AudioFormat::S16
+    Ok(WAVEFORMATEX {
+        wFormatTag: format_tag,
+        nChannels: channels,
+        nSamplesPerSec: sample_rate,
+        nAvgBytesPerSec: avg_bytes_per_sec,
+        nBlockAlign: block_align,
+        wBitsPerSample: bits_per_sample,
+        cbSize: 0,
+    })
 }
 
 /// デバイス ID からデバイスを取得する。
@@ -331,5 +351,78 @@ mod tests {
         let _ = WasapiDeviceListImpl::enumerate(None);
         drop(guard);
         assert_com_initialization_count_is_zero();
+    }
+
+    /// `WAVEFORMATEX` のフィールドを値として取り出したタプルを返す。
+    fn fields(format: WAVEFORMATEX) -> (u16, u16, u32, u32, u16, u16, u16) {
+        // WAVEFORMATEX は packed なので、フィールドの参照を作らずに値をコピーする
+        (
+            format.wFormatTag,
+            format.nChannels,
+            format.nSamplesPerSec,
+            format.nAvgBytesPerSec,
+            format.nBlockAlign,
+            format.wBitsPerSample,
+            format.cbSize,
+        )
+    }
+
+    /// 指定した形式の `WAVEFORMATEX` を組み立てること
+    #[test]
+    fn builds_wave_format() {
+        assert_eq!(
+            fields(
+                build_wave_format(AudioFormat::S16, 48000, 1)
+                    .expect("S16 48000 Hz 1 ch を組み立てられること")
+            ),
+            (WAVE_FORMAT_PCM as u16, 1, 48000, 96000, 2, 16, 0),
+            "S16 は 1 サンプル 2 バイトの PCM になること"
+        );
+        assert_eq!(
+            fields(
+                build_wave_format(AudioFormat::F32, 44100, 2)
+                    .expect("F32 44100 Hz 2 ch を組み立てられること")
+            ),
+            (WAVE_FORMAT_IEEE_FLOAT as u16, 2, 44100, 352800, 8, 32, 0),
+            "F32 は 1 サンプル 4 バイトの IEEE_FLOAT になること"
+        );
+    }
+
+    /// 不正な値は拒否すること
+    #[test]
+    fn rejects_invalid_wave_format() {
+        // サンプルレートとチャンネル数が 0 の場合は拒否する
+        assert!(
+            matches!(
+                build_wave_format(AudioFormat::S16, 0, 1),
+                Err(Error::InvalidAudioFormat)
+            ),
+            "sample_rate が 0 の場合は InvalidAudioFormat になること"
+        );
+        assert!(
+            matches!(
+                build_wave_format(AudioFormat::S16, 48000, 0),
+                Err(Error::InvalidAudioFormat)
+            ),
+            "channels が 0 の場合は InvalidAudioFormat になること"
+        );
+
+        // 32768 ch は 1 フレーム 65536 バイトになり nBlockAlign に収まらない
+        assert!(
+            matches!(
+                build_wave_format(AudioFormat::S16, 48000, 32768),
+                Err(Error::InvalidAudioFormat)
+            ),
+            "nBlockAlign が u16 に収まらない場合は InvalidAudioFormat になること"
+        );
+
+        // i32::MAX Hz 2 ch は 8589934588 バイト/秒になり nAvgBytesPerSec に収まらない
+        assert!(
+            matches!(
+                build_wave_format(AudioFormat::S16, i32::MAX as u32, 2),
+                Err(Error::InvalidAudioFormat)
+            ),
+            "nAvgBytesPerSec が u32 に収まらない場合は InvalidAudioFormat になること"
+        );
     }
 }

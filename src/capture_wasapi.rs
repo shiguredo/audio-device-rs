@@ -11,7 +11,7 @@ use windows::{
 };
 
 use crate::common::{AudioCaptureConfig, AudioDeviceType, AudioFormat, AudioFrame};
-use crate::device_wasapi::{ComGuard, SendHandle, SendPtr, get_device_by_id};
+use crate::device_wasapi::{ComGuard, SendHandle, SendPtr, build_wave_format, get_device_by_id};
 use crate::error::{Error, Result};
 
 pub(crate) struct WasapiCaptureContext {
@@ -55,8 +55,19 @@ impl WasapiCaptureImpl {
                 .Activate(CLSCTX_ALL, None)
                 .map_err(|_| Error::DeviceAccessDenied)?;
 
-            // 要求するフォーマットを構築する
-            let wave_format = build_capture_wave_format(config.sample_rate, config.channels)?;
+            // 要求するフォーマットを構築する。0 以下の値は既定値に丸める
+            let sample_rate = if config.sample_rate <= 0 {
+                48000
+            } else {
+                config.sample_rate as u32
+            };
+            let channels = if config.channels <= 0 {
+                1
+            } else {
+                config.channels
+            };
+            let channels = u16::try_from(channels).map_err(|_| Error::InvalidAudioFormat)?;
+            let wave_format = build_wave_format(AudioFormat::S16, sample_rate, channels)?;
             let sample_rate = wave_format.nSamplesPerSec as i32;
             let channels = wave_format.nChannels as i32;
             let format = AudioFormat::S16;
@@ -224,43 +235,6 @@ impl Drop for WasapiCaptureImpl {
 // MTA オブジェクトはスレッド間で安全に移送できる。
 unsafe impl Send for WasapiCaptureImpl {}
 unsafe impl Sync for WasapiCaptureImpl {}
-
-/// 指定されたサンプルレートとチャンネル数から、キャプチャで要求する S16 の
-/// `WAVEFORMATEX` を構築する。
-///
-/// `sample_rate` が 0 以下の場合は 48000、`channels` が 0 以下の場合は 1 ch として扱う。
-///
-/// # エラー
-///
-/// - 1 サンプルフレームあたりのバイト数が `WAVEFORMATEX` の `u16` フィールドに収まらない場合
-/// - 1 秒あたりのバイト数が `WAVEFORMATEX` の `u32` フィールドに収まらない場合
-///
-/// はいずれも [`Error::SessionCreateFailed`] を返す。
-fn build_capture_wave_format(sample_rate: i32, channels: i32) -> Result<WAVEFORMATEX> {
-    // 0 以下の値は既定値に丸める
-    let sample_rate = if sample_rate <= 0 { 48000 } else { sample_rate };
-    let channels = if channels <= 0 { 1 } else { channels };
-
-    // S16 は 1 サンプルあたり 2 バイトなので、1 フレームあたりのバイト数は
-    // チャンネル数の 2 倍になる。i32 の範囲の値でも乗算がオーバーフローしないよう
-    // u64 で計算してから各フィールドの型に変換する。
-    let channels = u16::try_from(channels).map_err(|_| Error::SessionCreateFailed)?;
-    let block_align = (channels as u64) * 2;
-    let block_align = u16::try_from(block_align).map_err(|_| Error::SessionCreateFailed)?;
-    let avg_bytes_per_sec = (sample_rate as u64) * (block_align as u64);
-    let avg_bytes_per_sec =
-        u32::try_from(avg_bytes_per_sec).map_err(|_| Error::SessionCreateFailed)?;
-
-    Ok(WAVEFORMATEX {
-        wFormatTag: WAVE_FORMAT_PCM as u16,
-        nChannels: channels,
-        nSamplesPerSec: sample_rate as u32,
-        nAvgBytesPerSec: avg_bytes_per_sec,
-        nBlockAlign: block_align,
-        wBitsPerSample: 16,
-        cbSize: 0,
-    })
-}
 
 /// パケットのキャプチャ時刻とデバイス位置の組。
 ///
@@ -518,13 +492,12 @@ fn qpc_counter_to_micros(counter: i64, frequency: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        TimestampAnchor, build_capture_wave_format, clamp_timestamp_us, interpolate_timestamp_us,
-        qpc_counter_to_micros, qpc_position_to_micros, timestamp_for_packet,
+        TimestampAnchor, clamp_timestamp_us, interpolate_timestamp_us, qpc_counter_to_micros,
+        qpc_position_to_micros, timestamp_for_packet,
     };
-    use crate::error::Error;
     use windows::Win32::Media::Audio::{
         AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
-        AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, WAVE_FORMAT_PCM, WAVEFORMATEX,
+        AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR,
     };
 
     /// タイムスタンプが無効であることを示すフラグ
@@ -542,160 +515,6 @@ mod tests {
             device_position,
             timestamp_us,
         }
-    }
-
-    /// packed な `WAVEFORMATEX` のフィールドを値として取り出したもの
-    struct WaveFormat {
-        format_tag: u16,
-        channels: u16,
-        sample_rate: u32,
-        avg_bytes_per_sec: u32,
-        block_align: u16,
-        bits_per_sample: u16,
-        cb_size: u16,
-    }
-
-    /// `WAVEFORMATEX` の各フィールドを値として取り出す。
-    fn unpack(format: WAVEFORMATEX) -> WaveFormat {
-        // WAVEFORMATEX は packed なので、フィールドの参照を作らずに値をコピーする。
-        WaveFormat {
-            format_tag: format.wFormatTag,
-            channels: format.nChannels,
-            sample_rate: format.nSamplesPerSec,
-            avg_bytes_per_sec: format.nAvgBytesPerSec,
-            block_align: format.nBlockAlign,
-            bits_per_sample: format.wBitsPerSample,
-            cb_size: format.cbSize,
-        }
-    }
-
-    /// 48000 Hz 1 ch から S16 の WAVEFORMATEX を構築すること
-    #[test]
-    fn builds_mono_s16_wave_format() {
-        let format = unpack(
-            build_capture_wave_format(48000, 1)
-                .expect("48000 Hz 1 ch は WAVEFORMATEX に収まること"),
-        );
-        assert_eq!(
-            format.format_tag, WAVE_FORMAT_PCM as u16,
-            "PCM を指定すること"
-        );
-        assert_eq!(format.channels, 1, "チャンネル数を指定すること");
-        assert_eq!(format.sample_rate, 48000, "サンプルレートを指定すること");
-        assert_eq!(
-            format.avg_bytes_per_sec, 96000,
-            "1 秒あたり 48000 サンプル * 2 バイトになること"
-        );
-        assert_eq!(format.block_align, 2, "1 フレームあたり 2 バイトになること");
-        assert_eq!(
-            format.bits_per_sample, 16,
-            "サンプルあたり 16 bit を指定すること"
-        );
-        assert_eq!(format.cb_size, 0, "拡張領域を持たないこと");
-    }
-
-    /// 44100 Hz 2 ch では 1 フレームと 1 秒あたりのバイト数が 2 倍になること
-    #[test]
-    fn builds_stereo_s16_wave_format() {
-        let format = unpack(
-            build_capture_wave_format(44100, 2)
-                .expect("44100 Hz 2 ch は WAVEFORMATEX に収まること"),
-        );
-        assert_eq!(format.channels, 2, "チャンネル数を指定すること");
-        assert_eq!(
-            format.block_align, 4,
-            "1 フレームあたり 2 ch * 2 バイトになること"
-        );
-        assert_eq!(
-            format.avg_bytes_per_sec, 176400,
-            "1 秒あたり 44100 サンプル * 4 バイトになること"
-        );
-    }
-
-    /// 0 以下の値は 48000 Hz 1 ch として扱うこと
-    #[test]
-    fn clamps_non_positive_values() {
-        for (sample_rate, channels) in [(0, 0), (-1, -1), (-48000, -2)] {
-            let format = unpack(
-                build_capture_wave_format(sample_rate, channels)
-                    .expect("0 以下の値は既定値に丸められ WAVEFORMATEX に収まること"),
-            );
-            assert_eq!(
-                format.sample_rate, 48000,
-                "sample_rate={sample_rate} は 48000 Hz として扱うこと"
-            );
-            assert_eq!(
-                format.channels, 1,
-                "channels={channels} は 1 ch として扱うこと"
-            );
-            assert_eq!(format.block_align, 2, "1 フレームあたり 2 バイトになること");
-            assert_eq!(
-                format.avg_bytes_per_sec, 96000,
-                "1 秒あたり 48000 サンプル * 2 バイトになること"
-            );
-        }
-
-        // 片方だけが 0 以下の場合も、その項目だけを丸める
-        let format =
-            unpack(build_capture_wave_format(0, 2).expect("48000 Hz 2 ch として扱えること"));
-        assert_eq!(format.sample_rate, 48000, "48000 Hz として扱うこと");
-        assert_eq!(format.channels, 2, "指定したチャンネル数を維持すること");
-    }
-
-    /// 1 フレームあたりのバイト数が u16 に収まらないチャンネル数を拒否すること
-    #[test]
-    fn rejects_channels_whose_block_align_exceeds_u16() {
-        // 32767 ch では 65534 バイトになり u16 の最大値に収まる
-        let format = unpack(
-            build_capture_wave_format(48000, 32767).expect("65534 バイトは u16 に収まること"),
-        );
-        assert_eq!(
-            format.block_align,
-            u16::MAX - 1,
-            "32767 ch * 2 バイトが nBlockAlign に入ること"
-        );
-
-        // 32768 ch では 65536 バイトになり u16 の最大値を超える
-        assert!(
-            matches!(
-                build_capture_wave_format(48000, 32768),
-                Err(Error::SessionCreateFailed)
-            ),
-            "nBlockAlign が u16 に収まらない場合は SessionCreateFailed になること"
-        );
-
-        // 65536 ch は nChannels 自体が u16 に収まらない
-        assert!(
-            matches!(
-                build_capture_wave_format(48000, 65536),
-                Err(Error::SessionCreateFailed)
-            ),
-            "nChannels が u16 に収まらない場合は SessionCreateFailed になること"
-        );
-    }
-
-    /// 1 秒あたりのバイト数が u32 に収まらない場合は拒否すること
-    #[test]
-    fn rejects_avg_bytes_per_sec_that_exceeds_u32() {
-        // i32::MAX Hz 1 ch では 4294967294 バイト/秒になり u32 の最大値に収まる
-        let format = unpack(
-            build_capture_wave_format(i32::MAX, 1)
-                .expect("4294967294 バイト/秒は u32 に収まること"),
-        );
-        assert_eq!(
-            format.avg_bytes_per_sec,
-            u32::MAX - 1,
-            "i32::MAX Hz 1 ch * 2 バイトが nAvgBytesPerSec に入ること"
-        );
-
-        // i32::MAX Hz 2 ch では 8589934588 バイト/秒になり u32 の最大値を超える
-        assert!(
-            matches!(
-                build_capture_wave_format(i32::MAX, 2),
-                Err(Error::SessionCreateFailed)
-            ),
-            "nAvgBytesPerSec が u32 に収まらない場合は SessionCreateFailed になること"
-        );
     }
 
     /// counter * 1_000_000 が i64 の最大値を超える境界値でも正しく変換できること

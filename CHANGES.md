@@ -15,6 +15,9 @@
   - @melpon
 - [CHANGE] Windows ではライブラリを利用するスレッドの先頭で `initialize_thread()` を呼ぶ必要があるようにする
   - @melpon
+- [CHANGE] `Error::InvalidAudioFormat` を追加する
+  - WASAPI で指定したサンプルレートやチャンネル数が音声形式として表現できない場合は `Error::SessionCreateFailed` ではなく `Error::InvalidAudioFormat` を返す
+  - @melpon
 - [FIX] `Cargo.toml` の `windows` 依存を MSRV 1.93 の cargo が解釈できる形式に修正する
   - @voluntas
 - [FIX] examples が `--no-default-features` でビルドできない問題を修正する
@@ -39,6 +42,12 @@
   - @melpon
 - [FIX] WASAPI キャプチャの `AudioFrame.timestamp_us` をパケット先頭フレームのキャプチャ時刻にする
   - `IAudioCaptureClient::GetBuffer` の QPC 位置を使い、利用できない場合はデバイス位置から補間する
+  - @melpon
+- [FIX] WASAPI 再生でデバイスの mix format に依存せず、常に F32 で初期化するようにする
+  - 24/32 bit PCM のデバイスでも壊れた音声データを生成しない
+  - @melpon
+- [FIX] WASAPI 再生で `AudioPlaybackConfig` の `sample_rate` と `channels` を無視する問題を修正する
+  - 0 以下の場合は 48000 Hz / 2 ch を使う
   - @melpon
 
 ### misc

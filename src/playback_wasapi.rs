@@ -13,7 +13,7 @@ use crate::common::{
     AudioDeviceType, AudioFormat, AudioPlaybackConfig, PlaybackFrame,
     write_playback_frame_to_buffer,
 };
-use crate::device_wasapi::{ComGuard, SendHandle, SendPtr, get_device_by_id};
+use crate::device_wasapi::{ComGuard, SendHandle, SendPtr, build_wave_format, get_device_by_id};
 use crate::error::{Error, Result};
 
 pub(crate) struct PlaybackContext {
@@ -64,32 +64,37 @@ impl WasapiPlaybackImpl {
                 .Activate(CLSCTX_ALL, None)
                 .map_err(|_| Error::DeviceAccessDenied)?;
 
-            // ミックスフォーマットを取得
-            let mix_format = audio_client
-                .GetMixFormat()
-                .map_err(|_| Error::DeviceAccessDenied)?;
-            let wave_format = &*mix_format;
+            // 要求する形式は F32 に固定する。S16 のフレームも F32 へは無損失で変換できる。
+            // 0 以下の値は既定値に丸める
+            let sample_rate = if config.sample_rate <= 0 {
+                48000
+            } else {
+                config.sample_rate as u32
+            };
+            let channels = if config.channels <= 0 {
+                2
+            } else {
+                config.channels
+            };
+            let channels = u16::try_from(channels).map_err(|_| Error::InvalidAudioFormat)?;
+            let client_format = build_wave_format(AudioFormat::F32, sample_rate, channels)?;
+            let sample_rate = client_format.nSamplesPerSec as i32;
+            let channels = client_format.nChannels as i32;
 
-            // フォーマット情報を取得
-            let format = crate::device_wasapi::determine_audio_format(mix_format);
-
-            let sample_rate = wave_format.nSamplesPerSec as i32;
-            let channels = wave_format.nChannels as i32;
-
-            // オーディオクライアントを初期化（10ms バッファ）
+            // デバイスの mix format への変換は共有モードの形式変換に任せる
             let init_result = audio_client.Initialize(
                 AUDCLNT_SHAREMODE_SHARED,
-                AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+                    | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                    | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
                 100_000, // 100 ナノ秒単位で 10ms を指定する
                 0,
-                mix_format,
+                &client_format,
                 Some(std::ptr::null()),
             );
-
-            // Initialize の成否にかかわらず mix_format を解放する
-            CoTaskMemFree(Some(mix_format as *const _));
-
             init_result.map_err(|_| Error::SessionCreateFailed)?;
+
+            let format = AudioFormat::F32;
 
             // バッファサイズを取得
             let buffer_frames = audio_client

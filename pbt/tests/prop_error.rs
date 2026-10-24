@@ -26,6 +26,7 @@ const ERROR_SAMPLERS: &[ErrorSampler] = &[
     |_| Error::InvalidChannels,
     |_| Error::InvalidDataLength,
     |_| Error::DataTooLarge(i8::try_from(256i16).expect_err("256 は i8 に収まらない")),
+    |_| Error::InvalidAudioFormat,
     |ctx| Error::UnknownFormat(noprop::sample_i32(ctx)),
     |ctx| Error::UnknownDeviceType(noprop::sample_i32(ctx)),
     |_| Error::NullPointer("device name"),
