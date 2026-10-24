@@ -179,9 +179,9 @@ impl AudioFrameOwned {
 pub struct AudioCaptureConfig {
     /// デバイス ID（None の場合はデフォルトデバイス）
     pub device_id: Option<String>,
-    /// サンプルレート
+    /// サンプルレート（0 以下の場合は 48000 Hz）
     pub sample_rate: i32,
-    /// チャンネル数
+    /// チャンネル数（0 以下の場合は 1 ch）
     pub channels: i32,
 }
 
@@ -284,9 +284,9 @@ impl PlaybackFrame {
 pub struct AudioPlaybackConfig {
     /// デバイス ID（None の場合はデフォルトデバイス）
     pub device_id: Option<String>,
-    /// サンプルレート（0 の場合はデバイスのデフォルト）
+    /// サンプルレート（0 以下の場合は 48000 Hz）
     pub sample_rate: i32,
-    /// チャンネル数（0 の場合はデバイスのデフォルト）
+    /// チャンネル数（0 以下の場合は 2 ch）
     pub channels: i32,
 }
 

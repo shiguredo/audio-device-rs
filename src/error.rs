@@ -27,6 +27,8 @@ pub enum Error {
     InvalidDeviceId,
     /// データ長が i32 に収まらない
     DataTooLarge(std::num::TryFromIntError),
+    /// 音声形式として表現できない値が指定された
+    InvalidAudioFormat,
     /// 未知のオーディオフォーマット値
     UnknownFormat(i32),
     /// 未知のオーディオデバイス種別値
@@ -53,6 +55,7 @@ impl fmt::Display for Error {
                 write!(f, "invalid device id: must not contain a null byte")
             }
             Error::DataTooLarge(e) => write!(f, "data too large: {}", e),
+            Error::InvalidAudioFormat => write!(f, "invalid audio format"),
             Error::UnknownFormat(v) => write!(f, "unknown audio format: {}", v),
             Error::UnknownDeviceType(v) => write!(f, "unknown audio device type: {}", v),
         }
