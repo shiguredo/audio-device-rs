@@ -1,7 +1,7 @@
 # determine_audio_format が 24/32 bit PCM を S16 と誤判定する
 
 - Created: 2026-10-19
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-24
 - Branch: feature/fix-wasapi-format-detection
 - Polished: 2026-10-19
 
@@ -54,3 +54,12 @@ capture は 0043 で S16 のストリームを要求するようになり、`det
 - `build_wave_format` の単体テストが S16 と F32 の各フィールド、およびフィールド幅を超える値を固定していること
 - Windows で `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` がパスすること
 - `CHANGES.md` の `## develop` に `[CHANGE]` と `[FIX]` エントリを追加すること
+
+## 解決方法
+
+- 再生の初期化を F32 固定にし、`AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM` と `AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY` を追加した
+- `determine_audio_format` を削除し、mix format のサンプル形式を解釈しないようにした
+- `AudioPlaybackConfig` の `sample_rate` と `channels` を使うようにし、0 以下の場合は 48000 Hz / 2 ch にした
+- `WAVEFORMATEX` の構築を `build_wave_format` に共通化し、`Error::InvalidAudioFormat` を追加した
+- Windows 実機で F32 と S16 のフレーム再生、44100 Hz 指定時のリサンプル、0/0 指定時の既定値を確認した
+- 24/32 bit PCM のデバイスは用意できなかったが、mix format のサンプル形式を解釈しないため影響しない
