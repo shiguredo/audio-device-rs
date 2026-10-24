@@ -51,7 +51,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libpulse-dev libclang-dev pulseaudio pulseaudio-utils
       - name: Install Linux dependencies (pipewire)
         if: runner.os == 'Linux' && contains(matrix.cargo-flags, 'pipewire')
-        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev libclang-dev pipewire wireplumber
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev libclang-dev pipewire wireplumber dbus-x11
       - run: cargo fmt --all --check
       - run: cargo check --workspace ${{ matrix.cargo-flags }}
       - name: Run cargo test (Linux with virtual audio)
@@ -79,6 +79,8 @@ jobs:
             feeder_pid=$!
             sleep 1
           else
+            # WirePlumber 0.4 はセッション D-Bus を必要とする
+            eval "$(dbus-launch --sh-syntax)"
             pipewire >"$RUNNER_TEMP/pipewire.log" 2>&1 &
             pipewire_pid=$!
             wireplumber >"$RUNNER_TEMP/wireplumber.log" 2>&1 &
@@ -90,13 +92,14 @@ jobs:
           fi
 
           set +e
-          cargo test --workspace ${{ matrix.cargo-flags }}
+          timeout 300 cargo test --workspace ${{ matrix.cargo-flags }}
           status=$?
           set -e
 
           if [ -n "${feeder_pid:-}" ]; then kill "$feeder_pid" 2>/dev/null || true; fi
           if [ -n "${wireplumber_pid:-}" ]; then kill "$wireplumber_pid" 2>/dev/null || true; fi
           if [ -n "${pipewire_pid:-}" ]; then kill "$pipewire_pid" 2>/dev/null || true; fi
+          if [ -n "${DBUS_SESSION_BUS_PID:-}" ]; then kill "$DBUS_SESSION_BUS_PID" 2>/dev/null || true; fi
           if [ "${{ matrix.virtual-audio }}" = "pulse" ]; then pulseaudio --kill 2>/dev/null || true; fi
           exit "$status"
       - name: Run cargo test (non-Linux)
