@@ -49,9 +49,22 @@
 - [FIX] WASAPI 再生で `AudioPlaybackConfig` の `sample_rate` と `channels` を無視する問題を修正する
   - 0 以下の場合は 48000 Hz / 2 ch を使う
   - @melpon
+- [FIX] PulseAudio キャプチャの `AudioFrame.timestamp_us` をパケット先頭フレームの録音時刻にする
+  - `pa_stream_get_latency` から求めた録音時刻を基準に、パケットの音声時間で補間する
+  - @melpon
+- [FIX] PipeWire キャプチャの `AudioFrame.timestamp_us` をバッファのキャプチャ時刻にする
+  - `pw_buffer.time` を使い、利用できない場合はストリーム時刻へフォールバックする
+  - @melpon
+- [FIX] デバイスが 0 件のときに `Error::DeviceAccessDenied` を返す問題を修正する
+  - 空のデバイスリストを正常な結果として返す
+  - @melpon
+- [FIX] PipeWire 再生でバッファ容量ではなく PipeWire が要求したサンプル数を使うように修正する
+  - @melpon
 
 ### misc
 
+- [ADD] 実機の入力デバイスと出力デバイスでキャプチャと再生のタイミングを検証するテストを追加する
+  - @melpon
 - [ADD] `write_playback_frame_to_buffer` の直接テストを追加する
   - @voluntas
 - [UPDATE] PBT をプロパティベーステストフレームワーク noprop に移行する

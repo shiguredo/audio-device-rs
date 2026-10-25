@@ -91,7 +91,8 @@ impl FfiDeviceListImpl {
         let mut count: i32 = 0;
 
         let ret = unsafe { (ops.enumerate_devices)(&mut devices_ptr, &mut count) };
-        if ret < 0 || devices_ptr.is_null() {
+        // 0 件の場合は devices_ptr が NULL でも正常な空のリストとして扱う
+        if ret < 0 || count < 0 || (count > 0 && devices_ptr.is_null()) {
             return Err(Error::DeviceAccessDenied);
         }
 
@@ -238,5 +239,58 @@ mod tests {
         assert!(AudioFormat::from_ffi(2).is_err());
         assert!(AudioFormat::from_ffi(i32::MAX).is_err());
         assert!(AudioFormat::from_ffi(i32::MIN).is_err());
+    }
+
+    unsafe extern "C" fn empty_enumerate_devices(
+        devices_ptr: *mut *mut *mut ffi::AudioDevice,
+        count: *mut i32,
+    ) -> i32 {
+        unsafe {
+            *devices_ptr = std::ptr::null_mut();
+            *count = 0;
+        }
+        0
+    }
+
+    unsafe extern "C" fn empty_free_devices(_devices_ptr: *mut *mut ffi::AudioDevice, _count: i32) {
+    }
+
+    unsafe extern "C" fn unreachable_device_name(_device: *mut ffi::AudioDevice) -> *const c_char {
+        unreachable!("空のリストではデバイス名を取得しない")
+    }
+
+    unsafe extern "C" fn unreachable_device_unique_id(
+        _device: *mut ffi::AudioDevice,
+    ) -> *const c_char {
+        unreachable!("空のリストではデバイス ID を取得しない")
+    }
+
+    unsafe extern "C" fn unreachable_device_channels(_device: *mut ffi::AudioDevice) -> i32 {
+        unreachable!("空のリストではチャンネル数を取得しない")
+    }
+
+    unsafe extern "C" fn unreachable_device_sample_rate(_device: *mut ffi::AudioDevice) -> i32 {
+        unreachable!("空のリストではサンプルレートを取得しない")
+    }
+
+    unsafe extern "C" fn unreachable_device_type(_device: *mut ffi::AudioDevice) -> i32 {
+        unreachable!("空のリストではデバイス種別を取得しない")
+    }
+
+    static OPS_EMPTY: DeviceOps = DeviceOps {
+        device_name: unreachable_device_name,
+        device_unique_id: unreachable_device_unique_id,
+        device_channels: unreachable_device_channels,
+        device_sample_rate: unreachable_device_sample_rate,
+        device_type: unreachable_device_type,
+        enumerate_devices: empty_enumerate_devices,
+        free_devices: empty_free_devices,
+    };
+
+    #[test]
+    fn empty_device_list_is_not_an_error() {
+        let list = FfiDeviceListImpl::enumerate(&OPS_EMPTY, None)
+            .expect("デバイスが 0 件でも空のリストを返すこと");
+        assert!(list.as_slice().is_empty());
     }
 }

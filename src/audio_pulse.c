@@ -30,6 +30,10 @@ struct AudioSession {
     int sample_rate;
     int channels;
     atomic_int running;
+    // 直前にコールバックへ渡したパケットのタイムスタンプとフレーム数
+    int64_t last_timestamp_us;
+    int last_frames;
+    int has_last_timestamp;
 };
 
 // デバイス列挙用のコンテキスト
@@ -347,6 +351,75 @@ static void session_state_callback(pa_context* c, void* userdata) {
     }
 }
 
+// 現在のモノトニック時刻をマイクロ秒で返す
+static int64_t monotonic_time_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+// タイミング情報の揺らぎを吸収するため、直前のパケットから予測した時刻と
+// pa_stream_get_latency() から求めた時刻の差がこの値を超えた場合だけ補正する
+static const int64_t capture_timestamp_resync_us = 50000;
+
+// パケット先頭フレームの録音時刻をマイクロ秒で求める。
+//
+// `oldest_timestamp_us` は、コールバックの先頭で求めたバッファ内で最も古い
+// サンプルの録音時刻である。読み出し済みのバイト数 `read_bytes` だけ進んだ位置が、
+// このパケットの先頭フレームの録音時刻になる。ただし pa_stream_get_latency() の値は
+// 補間されるため、パケットごとの差に数 ms の揺らぎがある。そこで直前のパケットの
+// 音声時間から予測した時刻を基本にし、予測から大きく外れた場合だけ latency の値で
+// 補正する。タイミング情報を取得できない場合も、予測した時刻を使う。
+//
+// 戻り値は直前のパケットのタイムスタンプより必ず大きくなる。
+static int64_t capture_timestamp_us(struct AudioSession* session,
+                                    int has_oldest_timestamp,
+                                    int64_t oldest_timestamp_us,
+                                    size_t read_bytes, int frames) {
+    int64_t timestamp_us;
+    int frame_size = session->channels * 2;  // S16 の 1 サンプルは 2 バイト
+
+    int64_t measured_timestamp_us = 0;
+    int has_measured_timestamp = 0;
+    if (has_oldest_timestamp && frame_size > 0 && session->sample_rate > 0) {
+        int64_t read_frames = (int64_t)(read_bytes / frame_size);
+        measured_timestamp_us = oldest_timestamp_us +
+                                read_frames * 1000000 / session->sample_rate;
+        has_measured_timestamp = 1;
+    }
+
+    if (has_measured_timestamp && !session->has_last_timestamp) {
+        timestamp_us = measured_timestamp_us;
+    } else if (session->has_last_timestamp) {
+        // 直前のパケットの音声時間だけ進めた時刻を予測値にする
+        timestamp_us = session->last_timestamp_us +
+                       (int64_t)session->last_frames * 1000000 /
+                           session->sample_rate;
+
+        if (has_measured_timestamp) {
+            int64_t difference_us = measured_timestamp_us - timestamp_us;
+            if (difference_us > capture_timestamp_resync_us ||
+                difference_us < -capture_timestamp_resync_us) {
+                // オーバーフローなどで音声時間と録音時刻が大きくずれた場合は
+                // latency の値で補正する
+                timestamp_us = measured_timestamp_us;
+            }
+        }
+    } else {
+        timestamp_us = monotonic_time_us();
+    }
+
+    if (session->has_last_timestamp && timestamp_us <= session->last_timestamp_us) {
+        timestamp_us = session->last_timestamp_us + 1;
+    }
+
+    session->last_timestamp_us = timestamp_us;
+    session->has_last_timestamp = 1;
+    session->last_frames = frames;
+
+    return timestamp_us;
+}
+
 // ストリーム読み取りコールバック
 static void stream_read_callback(pa_stream* s, size_t nbytes, void* userdata) {
     (void)nbytes;
@@ -359,18 +432,31 @@ static void stream_read_callback(pa_stream* s, size_t nbytes, void* userdata) {
     const void* data;
     size_t length;
 
+    // バッファ内で最も古いサンプルの録音時刻を求める。pa_stream_get_latency() は
+    // 読み出し位置のサンプルが録音されてからアプリケーションに届くまでの時間を
+    // 返すため、現在時刻から引くと最も古いサンプルの録音時刻になる。
+    int64_t oldest_timestamp_us = 0;
+    int has_oldest_timestamp = 0;
+    pa_usec_t latency = 0;
+    int negative = 0;
+    if (pa_stream_get_latency(s, &latency, &negative) == 0 && !negative) {
+        oldest_timestamp_us = monotonic_time_us() - (int64_t)latency;
+        has_oldest_timestamp = 1;
+    }
+
+    // このコールバックでこれまでに読み出したバイト数
+    size_t read_bytes = 0;
+
     while (pa_stream_peek(s, &data, &length) >= 0 && length > 0) {
         if (data && session->callback) {
-            int bytes_per_sample = 2;  // S16
+            int bytes_per_sample = 2;  // S16 の 1 サンプルは 2 バイト
             int frame_size = bytes_per_sample * session->channels;
             int frames = (int)(length / frame_size);
 
             if (frames > 0) {
-                // タイムスタンプを取得（マイクロ秒）
-                struct timespec ts;
-                clock_gettime(CLOCK_MONOTONIC, &ts);
-                int64_t timestamp_us =
-                    (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+                int64_t timestamp_us = capture_timestamp_us(
+                    session, has_oldest_timestamp, oldest_timestamp_us,
+                    read_bytes, frames);
 
                 session->callback(session->user_data, data, frames,
                                   session->channels, session->sample_rate,
@@ -378,6 +464,7 @@ static void stream_read_callback(pa_stream* s, size_t nbytes, void* userdata) {
             }
         }
 
+        read_bytes += length;
         pa_stream_drop(s);
     }
 }
@@ -478,6 +565,9 @@ int audio_pulse_session_start(struct AudioSession* session,
         return 0;
     }
 
+    // 前回のストリームのタイムスタンプを引き継がないよう、開始時に状態をリセットする
+    session->has_last_timestamp = 0;
+
     session->callback = callback;
     session->user_data = user_data;
 
@@ -528,8 +618,12 @@ int audio_pulse_session_start(struct AudioSession* session,
 
     // ストリームを接続する
     // device_id が NULL の場合はデフォルトソースを使用する
+    // パケット先頭フレームの録音時刻を pa_stream_get_latency() で取得するため、
+    // タイミング情報の自動更新と補間を有効にする
     if (pa_stream_connect_record(session->stream, session->device_id, NULL,
-                                 PA_STREAM_ADJUST_LATENCY) < 0) {
+                                 PA_STREAM_ADJUST_LATENCY |
+                                     PA_STREAM_AUTO_TIMING_UPDATE |
+                                     PA_STREAM_INTERPOLATE_TIMING) < 0) {
         pa_stream_unref(session->stream);
         session->stream = NULL;
         pa_threaded_mainloop_unlock(session->mainloop);

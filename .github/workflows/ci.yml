@@ -12,23 +12,29 @@ jobs:
   ci:
     name: CI (${{ matrix.name }})
     strategy:
+      fail-fast: false
       matrix:
         include:
           - name: Ubuntu (pulse)
             os: ubuntu-24.04
             cargo-flags: ""
+            audio-server: pulse
           - name: Ubuntu (pipewire)
             os: ubuntu-24.04
             cargo-flags: "--no-default-features --features default-pipewire"
+            audio-server: pipewire
           - name: Ubuntu ARM (pulse)
             os: ubuntu-24.04-arm
             cargo-flags: ""
+            audio-server: pulse
           - name: macOS
             os: macos-26
             cargo-flags: ""
+            audio-server: none
           - name: Windows
-            os: windows-2025
+            os: windows-2025-vs2026
             cargo-flags: ""
+            audio-server: none
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -42,13 +48,78 @@ jobs:
           toolchain: "1.93"
       - name: Install Linux dependencies (pulse)
         if: runner.os == 'Linux' && !contains(matrix.cargo-flags, 'pipewire')
-        run: sudo apt-get update && sudo apt-get install -y libpulse-dev libclang-dev
+        run: sudo apt-get update && sudo apt-get install -y libpulse-dev libclang-dev pulseaudio pulseaudio-utils
       - name: Install Linux dependencies (pipewire)
         if: runner.os == 'Linux' && contains(matrix.cargo-flags, 'pipewire')
-        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev libclang-dev
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev libclang-dev pipewire
       - run: cargo fmt --all --check
       - run: cargo check --workspace ${{ matrix.cargo-flags }}
-      - run: cargo test --workspace ${{ matrix.cargo-flags }}
+      - name: Run cargo test (Linux with audio server)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -e
+
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/audio-runtime"
+          export PIPEWIRE_RUNTIME_DIR="$XDG_RUNTIME_DIR"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+
+          cleanup() {
+            if [ -n "${pulse_pid:-}" ]; then kill "$pulse_pid" 2>/dev/null || true; fi
+            if [ -n "${pipewire_pid:-}" ]; then kill "$pipewire_pid" 2>/dev/null || true; fi
+          }
+          trap cleanup EXIT
+
+          if [ "${{ matrix.audio-server }}" = "pulse" ]; then
+            # PulseAudio サーバをフォアグラウンドで起動する
+            pulseaudio --daemonize=no --exit-idle-time=-1 -n --load=module-native-protocol-unix >"$RUNNER_TEMP/pulseaudio.log" 2>&1 &
+            pulse_pid=$!
+            # サーバが応答するまで待つ
+            ready=0
+            for _ in $(seq 1 10); do
+              if pactl info >/dev/null 2>&1; then
+                ready=1
+                break
+              fi
+              sleep 1
+            done
+            if [ "$ready" -ne 1 ]; then
+              echo "PulseAudio did not become ready" >&2
+              if [ -f "$RUNNER_TEMP/pulseaudio.log" ]; then
+                cat "$RUNNER_TEMP/pulseaudio.log" >&2
+              fi
+              exit 1
+            fi
+          else
+            # テストが接続する PipeWire サーバを起動する
+            pipewire >"$RUNNER_TEMP/pipewire.log" 2>&1 &
+            pipewire_pid=$!
+            # PipeWire のコアに接続できるまで待つ
+            ready=0
+            for _ in $(seq 1 10); do
+              if pw-cli info 0 >/dev/null 2>&1; then
+                ready=1
+                break
+              fi
+              sleep 1
+            done
+            if [ "$ready" -ne 1 ]; then
+              echo "PipeWire did not become ready" >&2
+              cat "$RUNNER_TEMP/pipewire.log" >&2
+              exit 1
+            fi
+          fi
+
+          set +e
+          timeout 300 cargo test --workspace ${{ matrix.cargo-flags }}
+          status=$?
+          set -e
+
+          exit "$status"
+      - name: Run cargo test (non-Linux)
+        if: runner.os != 'Linux'
+        run: cargo test --workspace ${{ matrix.cargo-flags }}
       - run: cargo clippy --workspace ${{ matrix.cargo-flags }} -- -D warnings
 
   device-test:
@@ -80,7 +151,13 @@ jobs:
         run: echo %USERPROFILE%\.cargo\bin>> "%GITHUB_PATH%"
       # rust-toolchain.toml に固定した MSRV のツールチェーンを導入する
       - run: rustup show
-      - run: cargo test --workspace
+      - name: Run cargo test (macOS)
+        if: runner.os == 'macOS'
+        # macOS の CI ではマイクへのアクセス許可がないため、キャプチャのテストを除外する
+        run: cargo test --workspace -- --skip capture_timestamps_track_audio_time
+      - name: Run cargo test (non-macOS)
+        if: runner.os != 'macOS'
+        run: cargo test --workspace
       - name: Run device_list
         run: >
           cargo run --example device_list | jq -e
