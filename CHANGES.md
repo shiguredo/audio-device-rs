@@ -58,6 +58,8 @@
 - [FIX] デバイスが 0 件のときに `Error::DeviceAccessDenied` を返す問題を修正する
   - 空のデバイスリストを正常な結果として返す
   - @melpon
+- [FIX] PipeWire 再生でバッファ容量ではなく PipeWire が要求したサンプル数を使うように修正する
+  - @melpon
 
 ### misc
 

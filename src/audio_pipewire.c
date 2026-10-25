@@ -702,7 +702,16 @@ static void playback_on_process(void* userdata) {
 
     int bytes_per_sample = 2;  // S16
     int frame_size = bytes_per_sample * session->channels;
-    int frames = (int)(max_size / frame_size);
+    uint32_t max_frames = max_size / frame_size;
+
+    // PipeWire が要求したサンプル数を優先し、要求がない場合だけ
+    // バッファ容量を使う
+    uint32_t frames = max_frames;
+#if PW_CHECK_VERSION(0, 3, 49)
+    if (buf->requested > 0 && buf->requested <= max_frames) {
+        frames = (uint32_t)buf->requested;
+    }
+#endif
 
     if (frames > 0 && session->callback) {
         int written = session->callback(session->user_data, data, frames,
@@ -710,8 +719,8 @@ static void playback_on_process(void* userdata) {
                                          AUDIO_FORMAT_S16);
 
         // コールバックが要求フレーム数を超える値を返した場合はクランプする
-        if (written > frames) {
-            written = frames;
+        if (written > (int)frames) {
+            written = (int)frames;
         }
 
         if (written <= 0) {
@@ -726,6 +735,8 @@ static void playback_on_process(void* userdata) {
 
     spa_buf->datas[0].chunk->offset = 0;
     spa_buf->datas[0].chunk->stride = frame_size;
+    // キューに追加するサンプル数を記録する
+    buf->size = frames;
 
     pw_stream_queue_buffer(session->stream, buf);
 }
