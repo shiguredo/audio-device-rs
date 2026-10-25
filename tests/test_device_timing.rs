@@ -1,6 +1,6 @@
 //! 実機の入力デバイスと出力デバイスを使ったキャプチャ・再生タイミングの検証。
 //!
-//! デフォルトバックエンドで列挙したすべての入力デバイスと出力デバイスを対象にする。
+//! デフォルトバックエンドで選ばれるデフォルトの入力デバイスと出力デバイスを対象にする。
 //! デバイスが無い環境では、その方向の検証をスキップして成功扱いにする。
 //! デバイス列挙に失敗した場合はテストを失敗させる。
 //! バックエンドはデフォルト feature で選ばれるものだけを使う。
@@ -22,10 +22,10 @@ use shiguredo_audio_device::{
     AudioPlaybackConfig, PlaybackFrame, initialize_thread,
 };
 
-/// 各入力デバイスでキャプチャを続ける時間。
+/// デフォルト入力デバイスでキャプチャを続ける時間。
 const CAPTURE_DURATION: Duration = Duration::from_secs(5);
 
-/// 各出力デバイスで再生を続ける時間。
+/// デフォルト出力デバイスで再生を続ける時間。
 const PLAYBACK_DURATION: Duration = Duration::from_secs(3);
 
 /// 再生開始直後の過渡状態を測定から除外する時間。
@@ -40,7 +40,7 @@ const MIN_VERIFIED_CAPTURE_PAIRS: usize = 2;
 /// 再生コールバックの要求フレーム数と経過時間に許す誤差。
 ///
 /// コールバックの周期や OS のスケジューリングによるずれを許容する。
-const PLAYBACK_TIMING_TOLERANCE: Duration = Duration::from_millis(250);
+const PLAYBACK_TIMING_TOLERANCE: Duration = Duration::from_millis(50);
 
 /// 再生するサイン波の周波数 (Hz)。
 const SIGNAL_FREQUENCY_HZ: f64 = 440.0;
@@ -89,109 +89,84 @@ fn enumerate_output_devices() -> Option<AudioDeviceList> {
     Some(devices)
 }
 
-/// 入力デバイスごとに、キャプチャしたフレームのタイムスタンプが音声時間と一致すること。
+/// デフォルト入力デバイスで、キャプチャしたフレームのタイムスタンプが音声時間と一致すること。
 #[test]
 fn capture_timestamps_track_audio_time() {
     let _guard = initialize_thread().expect("テストスレッドを初期化できること");
 
-    let Some(device_list) = enumerate_input_devices() else {
+    let Some(input_devices) = enumerate_input_devices() else {
         return;
     };
+    drop(input_devices);
 
-    for device in device_list.as_slice() {
-        let name = device
-            .name()
-            .unwrap_or_else(|error| panic!("入力デバイス名の取得に失敗しました: {error}"));
-        let unique_id = device.unique_id().unwrap_or_else(|error| {
-            panic!("入力デバイス {name} の一意識別子の取得に失敗しました: {error}")
-        });
-        eprintln!("入力デバイス {name} のキャプチャタイミングを検証します");
+    eprintln!("デフォルト入力デバイスのキャプチャタイミングを検証します");
 
-        // コールバックからテストスレッドへフレームを渡すため、チャネルを使う
-        let (sender, receiver) = mpsc::channel();
-        let config = AudioCaptureConfig {
-            device_id: Some(unique_id),
-            sample_rate: device.sample_rate(),
-            channels: device.channels(),
-        };
-        let mut capture = AudioCapture::new(config, move |frame| {
-            // 受信側が先に終了しても検証結果には影響しないため、送信エラーは無視する
-            let _ = sender.send(frame.to_owned());
-        })
-        .unwrap_or_else(|error| {
-            panic!("入力デバイス {name} のキャプチャを作成できません: {error}")
-        });
+    // コールバックからテストスレッドへフレームを渡すため、チャネルを使う
+    let (sender, receiver) = mpsc::channel();
+    let mut capture = AudioCapture::new(AudioCaptureConfig::default(), move |frame| {
+        // 受信側が先に終了しても検証結果には影響しないため、送信エラーは無視する
+        let _ = sender.send(frame.to_owned());
+    })
+    .unwrap_or_else(|error| panic!("デフォルト入力デバイスのキャプチャを作成できません: {error}"));
 
-        capture.start().unwrap_or_else(|error| {
-            panic!("入力デバイス {name} のキャプチャを開始できません: {error}")
-        });
-        std::thread::sleep(CAPTURE_DURATION);
-        capture.stop();
-        // キャプチャ停止後に受信を打ち切る
-        drop(capture);
+    capture.start().unwrap_or_else(|error| {
+        panic!("デフォルト入力デバイスのキャプチャを開始できません: {error}")
+    });
+    std::thread::sleep(CAPTURE_DURATION);
+    capture.stop();
+    // キャプチャ停止後に受信を打ち切る
+    drop(capture);
 
-        let frames: Vec<AudioFrameOwned> = receiver.try_iter().collect();
-        assert!(
-            !frames.is_empty(),
-            "入力デバイス {name} からフレームが 1 つも届きませんでした"
-        );
-        verify_capture_timestamps(&name, &frames);
-    }
+    let frames: Vec<AudioFrameOwned> = receiver.try_iter().collect();
+    assert!(
+        !frames.is_empty(),
+        "デフォルト入力デバイスからフレームが 1 つも届きませんでした"
+    );
+    verify_capture_timestamps("デフォルト入力デバイス", &frames);
 }
 
-/// 出力デバイスごとに、再生コールバックが呼ばれて要求フレーム数が経過時間に追従すること。
+/// デフォルト出力デバイスで、再生コールバックが呼ばれて要求フレーム数が経過時間に追従すること。
 #[test]
 fn playback_callbacks_track_audio_time() {
     let _guard = initialize_thread().expect("テストスレッドを初期化できること");
 
-    let Some(device_list) = enumerate_output_devices() else {
+    let Some(output_devices) = enumerate_output_devices() else {
         return;
     };
+    drop(output_devices);
 
-    for device in device_list.as_slice() {
-        let name = device
-            .name()
-            .unwrap_or_else(|error| panic!("出力デバイス名の取得に失敗しました: {error}"));
-        let unique_id = device.unique_id().unwrap_or_else(|error| {
-            panic!("出力デバイス {name} の一意識別子の取得に失敗しました: {error}")
-        });
-        eprintln!("出力デバイス {name} の再生タイミングを検証します");
+    eprintln!("デフォルト出力デバイスの再生タイミングを検証します");
 
-        // コールバックからテストスレッドへ呼び出し時刻と要求内容を渡すため、
-        // チャネルを使う
-        let (sender, receiver) = mpsc::channel();
-        // コールバックをまたいでサイン波の位相を継続させるための生成済みフレーム数
-        let phase_frames = Arc::new(AtomicU64::new(0));
-        let callback_phase_frames = Arc::clone(&phase_frames);
-        let mut playback = AudioPlayback::new(
-            AudioPlaybackConfig {
-                device_id: Some(unique_id),
-                sample_rate: device.sample_rate(),
-                channels: device.channels(),
-            },
-            move |frames, channels, sample_rate| {
-                let _ = sender.send(PlaybackCall {
-                    at: Instant::now(),
-                    frames,
-                    channels,
-                    sample_rate,
-                });
-                generate_signal(frames, channels, sample_rate, &callback_phase_frames)
-            },
-        )
-        .unwrap_or_else(|error| panic!("出力デバイス {name} の再生を作成できません: {error}"));
+    // コールバックからテストスレッドへ呼び出し時刻と要求内容を渡すため、
+    // チャネルを使う
+    let (sender, receiver) = mpsc::channel();
+    // コールバックをまたいでサイン波の位相を継続させるための生成済みフレーム数
+    let phase_frames = Arc::new(AtomicU64::new(0));
+    let callback_phase_frames = Arc::clone(&phase_frames);
+    let mut playback = AudioPlayback::new(
+        AudioPlaybackConfig::default(),
+        move |frames, channels, sample_rate| {
+            let _ = sender.send(PlaybackCall {
+                at: Instant::now(),
+                frames,
+                channels,
+                sample_rate,
+            });
+            generate_signal(frames, channels, sample_rate, &callback_phase_frames)
+        },
+    )
+    .unwrap_or_else(|error| panic!("デフォルト出力デバイスの再生を作成できません: {error}"));
 
-        playback
-            .start()
-            .unwrap_or_else(|error| panic!("出力デバイス {name} の再生を開始できません: {error}"));
-        std::thread::sleep(PLAYBACK_DURATION);
-        playback.stop();
-        // 再生停止後に受信を打ち切る
-        drop(playback);
+    playback
+        .start()
+        .unwrap_or_else(|error| panic!("デフォルト出力デバイスの再生を開始できません: {error}"));
+    std::thread::sleep(PLAYBACK_DURATION);
+    playback.stop();
+    // 再生停止後に受信を打ち切る
+    drop(playback);
 
-        let calls: Vec<PlaybackCall> = receiver.try_iter().collect();
-        verify_playback_calls(&name, &calls);
-    }
+    let calls: Vec<PlaybackCall> = receiver.try_iter().collect();
+    verify_playback_calls("デフォルト出力デバイス", &calls);
 }
 
 /// 連続するキャプチャフレームのタイムスタンプが単調に増加し、直前のフレームの
@@ -207,13 +182,13 @@ fn verify_capture_timestamps(device_name: &str, frames: &[AudioFrameOwned]) {
 
         assert!(
             previous.frames > 0 && previous.sample_rate > 0,
-            "入力デバイス {device_name} のフレームが不正です: frames={}, sample_rate={}",
+            "{device_name} のフレームが不正です: frames={}, sample_rate={}",
             previous.frames,
             previous.sample_rate
         );
         assert!(
             current.frames > 0 && current.sample_rate > 0,
-            "入力デバイス {device_name} のフレームが不正です: frames={}, sample_rate={}",
+            "{device_name} のフレームが不正です: frames={}, sample_rate={}",
             current.frames,
             current.sample_rate
         );
@@ -221,12 +196,10 @@ fn verify_capture_timestamps(device_name: &str, frames: &[AudioFrameOwned]) {
         let timestamp_diff_us = current
             .timestamp_us
             .checked_sub(previous.timestamp_us)
-            .unwrap_or_else(|| {
-                panic!("入力デバイス {device_name} のタイムスタンプ差が i64 の範囲を超えました")
-            });
+            .unwrap_or_else(|| panic!("{device_name} のタイムスタンプ差が i64 の範囲を超えました"));
         assert!(
             timestamp_diff_us > 0,
-            "入力デバイス {device_name} のタイムスタンプが単調増加していません: {} -> {}",
+            "{device_name} のタイムスタンプが単調増加していません: {} -> {}",
             previous.timestamp_us,
             current.timestamp_us
         );
@@ -237,33 +210,33 @@ fn verify_capture_timestamps(device_name: &str, frames: &[AudioFrameOwned]) {
 
         assert!(
             difference_us.abs() <= CAPTURE_TIMESTAMP_TOLERANCE_US,
-            "入力デバイス {device_name} のタイムスタンプ差 {timestamp_diff_us} us が直前のフレームの音声時間 {audio_duration_us} us と 1 ms を超えてずれています"
+            "{device_name} のタイムスタンプ差 {timestamp_diff_us} us が直前のフレームの音声時間 {audio_duration_us} us と 1 ms を超えてずれています"
         );
         verified_pairs += 1;
     }
 
     assert!(
         verified_pairs >= MIN_VERIFIED_CAPTURE_PAIRS,
-        "入力デバイス {device_name} でタイムスタンプを検証できた組が {} 組しかありません (最低 {} 組): {} フレーム",
+        "{device_name} でタイムスタンプを検証できた組が {} 組しかありません (最低 {} 組): {} フレーム",
         verified_pairs,
         MIN_VERIFIED_CAPTURE_PAIRS,
         frames.len()
     );
 
-    eprintln!("入力デバイス {device_name}: {verified_pairs} 組のタイムスタンプを検証しました");
+    eprintln!("{device_name}: {verified_pairs} 組のタイムスタンプを検証しました");
 }
 
 /// 再生コールバックの回数と要求フレーム数が、経過時間に追従していることを検証する。
 fn verify_playback_calls(device_name: &str, calls: &[PlaybackCall]) {
     assert!(
         !calls.is_empty(),
-        "出力デバイス {device_name} の再生コールバックが 1 回も呼ばれませんでした"
+        "{device_name} の再生コールバックが 1 回も呼ばれませんでした"
     );
 
     let first = calls[0];
     assert!(
         first.frames > 0 && first.channels > 0 && first.sample_rate > 0,
-        "出力デバイス {device_name} のコールバック引数が不正です: frames={}, channels={}, sample_rate={}",
+        "{device_name} のコールバック引数が不正です: frames={}, channels={}, sample_rate={}",
         first.frames,
         first.channels,
         first.sample_rate
@@ -273,22 +246,22 @@ fn verify_playback_calls(device_name: &str, calls: &[PlaybackCall]) {
     for call in calls {
         assert!(
             call.frames > 0,
-            "出力デバイス {device_name} のコールバックで要求フレーム数が 0 以下になりました: {}",
+            "{device_name} のコールバックで要求フレーム数が 0 以下になりました: {}",
             call.frames
         );
         assert_eq!(
             call.channels, first.channels,
-            "出力デバイス {device_name} のコールバックでチャンネル数が変化しました"
+            "{device_name} のコールバックでチャンネル数が変化しました"
         );
         assert_eq!(
             call.sample_rate, first.sample_rate,
-            "出力デバイス {device_name} のコールバックでサンプルレートが変化しました"
+            "{device_name} のコールバックでサンプルレートが変化しました"
         );
         cumulative_frames += call.frames as i64;
     }
     assert!(
         cumulative_frames > 0,
-        "出力デバイス {device_name} の要求フレーム数の累積が増えませんでした"
+        "{device_name} の要求フレーム数の累積が増えませんでした"
     );
 
     // 再生開始直後の過渡状態を除外するため、最初のコールバックから一定時間経過した
@@ -301,7 +274,7 @@ fn verify_playback_calls(device_name: &str, calls: &[PlaybackCall]) {
         .collect();
     assert!(
         measured_calls.len() >= 2,
-        "出力デバイス {device_name} の測定区間に再生コールバックが 2 回以上ありません: {} 回",
+        "{device_name} の測定区間に再生コールバックが 2 回以上ありません: {} 回",
         measured_calls.len()
     );
 
@@ -314,7 +287,7 @@ fn verify_playback_calls(device_name: &str, calls: &[PlaybackCall]) {
     let elapsed = end.at.duration_since(start.at);
     assert!(
         elapsed > Duration::ZERO,
-        "出力デバイス {device_name} の測定区間の経過時間が 0 です"
+        "{device_name} の測定区間の経過時間が 0 です"
     );
 
     // 測定区間の末尾で要求したフレームは、その時点ではまだ再生が完了していないため、
@@ -331,7 +304,7 @@ fn verify_playback_calls(device_name: &str, calls: &[PlaybackCall]) {
 
     assert!(
         difference_frames.abs() <= tolerance_frames,
-        "出力デバイス {device_name} の要求フレーム数が経過時間に追従していません: 経過 {:.3} 秒, 要求 {} フレーム, 期待 {:.0} フレーム, 差 {:.0} フレーム, 許容 {:.0} フレーム",
+        "{device_name} の要求フレーム数が経過時間に追従していません: 経過 {:.3} 秒, 要求 {} フレーム, 期待 {:.0} フレーム, 差 {:.0} フレーム, 許容 {:.0} フレーム",
         elapsed.as_secs_f64(),
         requested_frames,
         expected_frames,
@@ -340,7 +313,7 @@ fn verify_playback_calls(device_name: &str, calls: &[PlaybackCall]) {
     );
 
     eprintln!(
-        "出力デバイス {device_name}: {} 回のコールバックで {} フレームを要求し、{:.3} 秒の経過に対する期待値との差は {:.0} フレームでした",
+        "{device_name}: {} 回のコールバックで {} フレームを要求し、{:.3} 秒の経過に対する期待値との差は {:.0} フレームでした",
         calls.len(),
         cumulative_frames,
         elapsed.as_secs_f64(),
