@@ -51,7 +51,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libpulse-dev libclang-dev pulseaudio pulseaudio-utils
       - name: Install Linux dependencies (pipewire)
         if: runner.os == 'Linux' && contains(matrix.cargo-flags, 'pipewire')
-        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev libclang-dev pipewire wireplumber dbus-x11
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev libclang-dev pipewire
       - run: cargo fmt --all --check
       - run: cargo check --workspace ${{ matrix.cargo-flags }}
       - name: Run cargo test (Linux with audio server)
@@ -65,21 +65,50 @@ jobs:
           mkdir -p "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
 
+          cleanup() {
+            if [ -n "${pulse_pid:-}" ]; then kill "$pulse_pid" 2>/dev/null || true; fi
+            if [ -n "${pipewire_pid:-}" ]; then kill "$pipewire_pid" 2>/dev/null || true; fi
+          }
+          trap cleanup EXIT
+
           if [ "${{ matrix.audio-server }}" = "pulse" ]; then
-            # サーバーだけ起動する
-            unset PULSE_SERVER
-            pulseaudio --start --exit-idle-time=-1
-            export PULSE_SERVER="unix:$XDG_RUNTIME_DIR/pulse/native"
-            sleep 1
-            pactl info >/dev/null
+            # テストが接続する PulseAudio サーバをフォアグラウンドで起動する
+            pulseaudio --daemonize=no --exit-idle-time=-1 >"$RUNNER_TEMP/pulseaudio.log" 2>&1 &
+            pulse_pid=$!
+            # サーバが応答するまで待つ
+            ready=0
+            for _ in $(seq 1 10); do
+              if pactl info >/dev/null 2>&1; then
+                ready=1
+                break
+              fi
+              sleep 1
+            done
+            if [ "$ready" -ne 1 ]; then
+              echo "PulseAudio did not become ready" >&2
+              if [ -f "$RUNNER_TEMP/pulseaudio.log" ]; then
+                cat "$RUNNER_TEMP/pulseaudio.log" >&2
+              fi
+              exit 1
+            fi
           else
-            # サーバーだけ起動する
-            eval "$(dbus-launch --sh-syntax)"
+            # テストが接続する PipeWire サーバを起動する
             pipewire >"$RUNNER_TEMP/pipewire.log" 2>&1 &
             pipewire_pid=$!
-            wireplumber >"$RUNNER_TEMP/wireplumber.log" 2>&1 &
-            wireplumber_pid=$!
-            sleep 2
+            # PipeWire のコアに接続できるまで待つ
+            ready=0
+            for _ in $(seq 1 10); do
+              if pw-cli info 0 >/dev/null 2>&1; then
+                ready=1
+                break
+              fi
+              sleep 1
+            done
+            if [ "$ready" -ne 1 ]; then
+              echo "PipeWire did not become ready" >&2
+              cat "$RUNNER_TEMP/pipewire.log" >&2
+              exit 1
+            fi
           fi
 
           set +e
@@ -87,10 +116,6 @@ jobs:
           status=$?
           set -e
 
-          if [ -n "${wireplumber_pid:-}" ]; then kill "$wireplumber_pid" 2>/dev/null || true; fi
-          if [ -n "${pipewire_pid:-}" ]; then kill "$pipewire_pid" 2>/dev/null || true; fi
-          if [ -n "${DBUS_SESSION_BUS_PID:-}" ]; then kill "$DBUS_SESSION_BUS_PID" 2>/dev/null || true; fi
-          if [ "${{ matrix.audio-server }}" = "pulse" ]; then pulseaudio --kill 2>/dev/null || true; fi
           exit "$status"
       - name: Run cargo test (non-Linux)
         if: runner.os != 'Linux'
