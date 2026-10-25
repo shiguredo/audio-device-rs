@@ -151,7 +151,13 @@ jobs:
         run: echo %USERPROFILE%\.cargo\bin>> "%GITHUB_PATH%"
       # rust-toolchain.toml に固定した MSRV のツールチェーンを導入する
       - run: rustup show
-      - run: cargo test --workspace
+      - name: Run cargo test (macOS)
+        if: runner.os == 'macOS'
+        # macOS の CI ではマイクへのアクセス許可がないため、キャプチャのテストを除外する
+        run: cargo test --workspace -- --skip capture_timestamps_track_audio_time
+      - name: Run cargo test (non-macOS)
+        if: runner.os != 'macOS'
+        run: cargo test --workspace
       - name: Run device_list
         run: >
           cargo run --example device_list | jq -e
