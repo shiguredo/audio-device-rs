@@ -1,7 +1,7 @@
 # device_ffi.rs デバイス 0 件の列挙が DeviceAccessDenied エラーになる問題を修正する
 
 - Created: 2026-07-30
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-25
 - Branch: feature/fix-device-ffi-empty-list
 - Polished: {YYYY-MM-DD}
 
@@ -38,7 +38,12 @@ if ret < 0 || devices_ptr.is_null() {
 
 ## 解決方法
 
-`src/device_ffi.rs` の `FfiDeviceListImpl::enumerate` 関数内のエラーチェックを修正する:
+`src/device_ffi.rs` の `FfiDeviceListImpl::enumerate` 関数内のエラーチェックを、C 側の戻り値が次の条件を満たす場合のみ `Err(Error::DeviceAccessDenied)` を返すように修正した。
 
-1. `ret < 0` の場合のみ `Err(Error::DeviceAccessDenied)` を返す
-2. `ret >= 0` かつ `devices_ptr.is_null()` または `count <= 0` の場合は、空の `devices` Vec を持つ正常な `Self` を返す
+- `ret < 0` である
+- `count < 0` である
+- `count > 0` かつ `devices_ptr` が NULL である
+
+`count == 0` かつ `devices_ptr` が NULL の場合は、空の `devices` Vec を持つ正常な `Self` を返す。
+
+0 件を返す列挙関数から空のリストが得られることを検証する `empty_device_list_is_not_an_error` テストを追加した。CHANGES.md には、デバイスが 0 件のときに空のデバイスリストを正常な結果として返す旨を記載した。
