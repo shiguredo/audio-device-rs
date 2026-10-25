@@ -60,6 +60,11 @@
   - @melpon
 - [FIX] PipeWire 再生でバッファ容量ではなく PipeWire が要求したサンプル数を使うように修正する
   - @melpon
+- [FIX] PipeWire 再生セッションの開始に失敗したときに `pw_properties` を二重解放する問題を修正する
+  - @melpon
+- [FIX] PipeWire のストリーム状態待機がタイムアウトせずハングする問題を修正する
+  - 10 秒以内にストリーム状態が確定しない場合はセッション開始に失敗する
+  - @melpon
 
 ### misc
 

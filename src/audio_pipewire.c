@@ -11,6 +11,9 @@
 
 #include "audio_pipewire.h"
 
+// ストリームが状態遷移するまで待機する上限 (秒)
+#define STREAM_STATE_TIMEOUT_SEC 10
+
 // AudioDevice 構造体
 struct AudioDevice {
     char* name;
@@ -597,6 +600,10 @@ int audio_pipewire_session_start(struct AudioSession* session,
         return -5;
     }
 
+    // 状態遷移の待機が終わらない場合に備え、ループ開始からの経過時間で上限を設ける
+    struct timespec start_time;
+    clock_gettime(CLOCK_MONOTONIC, &start_time);
+
     // ストリームが streaming 状態になるまで待機する
     while (1) {
         enum pw_stream_state state = pw_stream_get_state(
@@ -619,7 +626,22 @@ int audio_pipewire_session_start(struct AudioSession* session,
             pw_thread_loop_stop(session->thread_loop);
             return -5;
         }
-        pw_thread_loop_wait(session->thread_loop);
+
+        // シグナルが来ない場合でも経過時間を確認できるよう、1 秒だけ待機する
+        pw_thread_loop_timed_wait(session->thread_loop, 1);
+
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        if (now.tv_sec - start_time.tv_sec >= STREAM_STATE_TIMEOUT_SEC) {
+            pw_stream_destroy(session->stream);
+            session->stream = NULL;
+            spa_hook_remove(&session->core_listener);
+            pw_core_disconnect(session->core);
+            session->core = NULL;
+            pw_thread_loop_unlock(session->thread_loop);
+            pw_thread_loop_stop(session->thread_loop);
+            return -5;
+        }
     }
 
     atomic_store(&session->running, 1);
@@ -919,10 +941,10 @@ int audio_pipewire_playback_session_start(struct PlaybackSession* session,
     }
 
     // ストリームを作成する
+    // pw_stream_new は成否に関わらず props の所有権を取得するため、失敗時も解放しない
     session->stream =
         pw_stream_new(session->core, "audio-playback", props);
     if (!session->stream) {
-        pw_properties_free(props);
         spa_hook_remove(&session->core_listener);
         pw_core_disconnect(session->core);
         session->core = NULL;
@@ -966,6 +988,10 @@ int audio_pipewire_playback_session_start(struct PlaybackSession* session,
         return -5;
     }
 
+    // 状態遷移の待機が終わらない場合に備え、ループ開始からの経過時間で上限を設ける
+    struct timespec start_time;
+    clock_gettime(CLOCK_MONOTONIC, &start_time);
+
     // ストリームが streaming 状態になるまで待機する
     while (1) {
         enum pw_stream_state state = pw_stream_get_state(
@@ -991,7 +1017,22 @@ int audio_pipewire_playback_session_start(struct PlaybackSession* session,
             pw_thread_loop_stop(session->thread_loop);
             return -5;
         }
-        pw_thread_loop_wait(session->thread_loop);
+
+        // シグナルが来ない場合でも経過時間を確認できるよう、1 秒だけ待機する
+        pw_thread_loop_timed_wait(session->thread_loop, 1);
+
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        if (now.tv_sec - start_time.tv_sec >= STREAM_STATE_TIMEOUT_SEC) {
+            pw_stream_destroy(session->stream);
+            session->stream = NULL;
+            spa_hook_remove(&session->core_listener);
+            pw_core_disconnect(session->core);
+            session->core = NULL;
+            pw_thread_loop_unlock(session->thread_loop);
+            pw_thread_loop_stop(session->thread_loop);
+            return -5;
+        }
     }
 
     atomic_store(&session->running, 1);
