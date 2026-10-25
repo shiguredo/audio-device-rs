@@ -72,8 +72,8 @@ jobs:
           trap cleanup EXIT
 
           if [ "${{ matrix.audio-server }}" = "pulse" ]; then
-            # テストが接続する PulseAudio サーバをフォアグラウンドで起動する
-            pulseaudio --daemonize=no --exit-idle-time=-1 >"$RUNNER_TEMP/pulseaudio.log" 2>&1 &
+            # PulseAudio サーバをフォアグラウンドで起動する
+            pulseaudio --daemonize=no --exit-idle-time=-1 -n --load=module-native-protocol-unix >"$RUNNER_TEMP/pulseaudio.log" 2>&1 &
             pulse_pid=$!
             # サーバが応答するまで待つ
             ready=0
