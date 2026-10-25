@@ -1,7 +1,8 @@
 //! 実機の入力デバイスと出力デバイスを使ったキャプチャ・再生タイミングの検証。
 //!
 //! デフォルトバックエンドで列挙したすべての入力デバイスと出力デバイスを対象にする。
-//! デバイスが無い環境や列挙に失敗した環境では、その方向の検証をスキップして成功扱いにする。
+//! デバイスが無い環境では、その方向の検証をスキップして成功扱いにする。
+//! デバイス列挙に失敗した場合はテストを失敗させる。
 //! バックエンドはデフォルト feature で選ばれるものだけを使う。
 
 #![cfg(any(
@@ -32,6 +33,9 @@ const PLAYBACK_WARMUP: Duration = Duration::from_secs(1);
 
 /// 連続するキャプチャフレームのタイムスタンプ差に許す誤差 (マイクロ秒)。
 const CAPTURE_TIMESTAMP_TOLERANCE_US: i64 = 1_000;
+
+/// タイムスタンプを検証するために必要な最低組数。
+const MIN_VERIFIED_CAPTURE_PAIRS: usize = 2;
 
 /// 再生コールバックの要求フレーム数と経過時間に許す誤差。
 ///
@@ -193,11 +197,9 @@ fn playback_callbacks_track_audio_time() {
 /// 連続するキャプチャフレームのタイムスタンプが単調に増加し、直前のフレームの
 /// 音声時間と 1 ms 以内で一致することを検証する。
 ///
-/// タイムスタンプの差が直前のフレームの音声時間より 1 ms を超えて大きい組は、
-/// その間にフレームが届かなかった区間とみなして検証から除外する。
+/// 一致しない組が 1 つでもあれば失敗する。
 fn verify_capture_timestamps(device_name: &str, frames: &[AudioFrameOwned]) {
     let mut verified_pairs = 0usize;
-    let mut skipped_pairs = 0usize;
 
     for pair in frames.windows(2) {
         let previous = &pair[0];
@@ -233,30 +235,22 @@ fn verify_capture_timestamps(device_name: &str, frames: &[AudioFrameOwned]) {
         let audio_duration_us = previous.frames as i64 * 1_000_000 / previous.sample_rate as i64;
         let difference_us = timestamp_diff_us - audio_duration_us;
 
-        if difference_us > CAPTURE_TIMESTAMP_TOLERANCE_US {
-            // 音声時間よりタイムスタンプが大きく進んでいる場合は、その間に
-            // フレームが届かなかった区間とみなす
-            skipped_pairs += 1;
-            continue;
-        }
-
         assert!(
-            difference_us >= -CAPTURE_TIMESTAMP_TOLERANCE_US,
-            "入力デバイス {device_name} のタイムスタンプ差 {timestamp_diff_us} us が直前のフレームの音声時間 {audio_duration_us} us より 1 ms を超えて小さいです"
+            difference_us.abs() <= CAPTURE_TIMESTAMP_TOLERANCE_US,
+            "入力デバイス {device_name} のタイムスタンプ差 {timestamp_diff_us} us が直前のフレームの音声時間 {audio_duration_us} us と 1 ms を超えてずれています"
         );
         verified_pairs += 1;
     }
 
     assert!(
-        verified_pairs > 0,
-        "入力デバイス {device_name} でタイムスタンプを検証できるフレームの組がありません: {} フレーム, {} 組を欠落として除外",
-        frames.len(),
-        skipped_pairs
+        verified_pairs >= MIN_VERIFIED_CAPTURE_PAIRS,
+        "入力デバイス {device_name} でタイムスタンプを検証できた組が {} 組しかありません (最低 {} 組): {} フレーム",
+        verified_pairs,
+        MIN_VERIFIED_CAPTURE_PAIRS,
+        frames.len()
     );
 
-    eprintln!(
-        "入力デバイス {device_name}: {verified_pairs} 組のタイムスタンプを検証し、{skipped_pairs} 組を欠落として除外しました"
-    );
+    eprintln!("入力デバイス {device_name}: {verified_pairs} 組のタイムスタンプを検証しました");
 }
 
 /// 再生コールバックの回数と要求フレーム数が、経過時間に追従していることを検証する。
