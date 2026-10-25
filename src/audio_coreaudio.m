@@ -3,7 +3,6 @@
 #import <Foundation/Foundation.h>
 #import <mach/mach_time.h>
 #include <stdatomic.h>
-#include <stdio.h>
 
 #include "audio_coreaudio.h"
 
@@ -436,109 +435,6 @@ static AudioDeviceID find_device_by_uid(const char* uid) {
     return foundDevice;
 }
 
-// CoreAudio のエラーを出力する
-static void log_os_status(const char* operation, OSStatus status) {
-    fprintf(stderr, "audio_coreaudio: %s failed: %d\n", operation, (int)status);
-}
-
-// AudioQueue が使用するデバイスの名前と UID を出力する
-static void log_queue_device(AudioQueueRef queue, const char* direction) {
-    CFStringRef uid = NULL;
-    UInt32 size = sizeof(uid);
-    OSStatus status = AudioQueueGetProperty(
-        queue, kAudioQueueProperty_CurrentDevice, &uid, &size);
-    if (status != noErr) {
-        log_os_status("AudioQueueGetProperty(CurrentDevice)", status);
-        return;
-    }
-    if (!uid) {
-        fprintf(stderr, "audio_coreaudio: %s device UID=<unknown>\n", direction);
-        return;
-    }
-
-    char uid_buffer[256];
-    if (!CFStringGetCString(uid, uid_buffer, sizeof(uid_buffer),
-                            kCFStringEncodingUTF8)) {
-        fprintf(stderr, "audio_coreaudio: %s device UID=<unprintable>\n",
-                direction);
-        CFRelease(uid);
-        return;
-    }
-
-    AudioDeviceID device_id = find_device_by_uid(uid_buffer);
-    CFStringRef name = NULL;
-    CFStringRef device_uid = NULL;
-    if (device_id != kAudioObjectUnknown &&
-        get_device_info(device_id, &name, &device_uid) == 0) {
-        char name_buffer[256];
-        if (name && CFStringGetCString(name, name_buffer, sizeof(name_buffer),
-                                       kCFStringEncodingUTF8)) {
-            fprintf(stderr, "audio_coreaudio: %s device name=%s uid=%s\n",
-                    direction, name_buffer, uid_buffer);
-        } else {
-            fprintf(stderr, "audio_coreaudio: %s device uid=%s\n", direction,
-                    uid_buffer);
-        }
-        if (name) {
-            CFRelease(name);
-        }
-        if (device_uid) {
-            CFRelease(device_uid);
-        }
-    } else {
-        fprintf(stderr, "audio_coreaudio: %s device uid=%s\n", direction,
-                uid_buffer);
-    }
-
-    CFRelease(uid);
-}
-
-// OS がデフォルトとして選択しているデバイスの名前と UID を出力する
-static void log_default_device(AudioObjectPropertySelector selector,
-                               const char* label) {
-    AudioObjectPropertyAddress address = {
-        selector, kAudioObjectPropertyScopeGlobal,
-        kAudioObjectPropertyElementMain};
-    AudioDeviceID device_id = kAudioObjectUnknown;
-    UInt32 size = sizeof(device_id);
-    OSStatus status = AudioObjectGetPropertyData(
-        kAudioObjectSystemObject, &address, 0, NULL, &size, &device_id);
-    if (status != noErr) {
-        log_os_status("AudioObjectGetPropertyData(default device)", status);
-        return;
-    }
-
-    CFStringRef name = NULL;
-    CFStringRef device_uid = NULL;
-    if (get_device_info(device_id, &name, &device_uid) != 0) {
-        fprintf(stderr, "audio_coreaudio: %s device name=<unknown>\n", label);
-        return;
-    }
-
-    char name_buffer[256];
-    char uid_buffer[256];
-    const char* name_text = "<unprintable>";
-    const char* uid_text = "<unprintable>";
-    if (name && CFStringGetCString(name, name_buffer, sizeof(name_buffer),
-                                   kCFStringEncodingUTF8)) {
-        name_text = name_buffer;
-    }
-    if (device_uid &&
-        CFStringGetCString(device_uid, uid_buffer, sizeof(uid_buffer),
-                           kCFStringEncodingUTF8)) {
-        uid_text = uid_buffer;
-    }
-    fprintf(stderr, "audio_coreaudio: %s device name=%s uid=%s\n", label,
-            name_text, uid_text);
-
-    if (name) {
-        CFRelease(name);
-    }
-    if (device_uid) {
-        CFRelease(device_uid);
-    }
-}
-
 struct AudioSession* audio_coreaudio_session_create(const char* device_id,
                                            int sample_rate,
                                            int channels) {
@@ -570,15 +466,12 @@ struct AudioSession* audio_coreaudio_session_create(const char* device_id,
     session->format.mFramesPerPacket = 1;
     session->format.mBytesPerPacket = session->format.mBytesPerFrame;
 
-    log_default_device(kAudioHardwarePropertyDefaultInputDevice, "input default");
-
     // AudioQueue を作成
     OSStatus status = AudioQueueNewInput(
         &session->format, audio_input_callback, session, NULL,
         kCFRunLoopCommonModes, 0, &session->queue);
 
     if (status != noErr) {
-        log_os_status("AudioQueueNewInput", status);
         free(session);
         return NULL;
     }
@@ -589,8 +482,6 @@ struct AudioSession* audio_coreaudio_session_create(const char* device_id,
     if (device_id) {
         AudioDeviceID deviceID = find_device_by_uid(device_id);
         if (deviceID == kAudioObjectUnknown) {
-            fprintf(stderr, "audio_coreaudio: input device not found: %s\n",
-                    device_id);
             AudioQueueDispose(session->queue, true);
             free(session);
             return NULL;
@@ -607,14 +498,11 @@ struct AudioSession* audio_coreaudio_session_create(const char* device_id,
                                    &deviceUID, sizeof(CFStringRef));
         CFRelease(deviceUID);
         if (setStatus != noErr) {
-            log_os_status("AudioQueueSetProperty(CurrentDevice)", setStatus);
             AudioQueueDispose(session->queue, true);
             free(session);
             return NULL;
         }
     }
-
-    log_queue_device(session->queue, "input");
 
     // バッファを作成（10ms 分）
     UInt32 bufferByteSize =
@@ -624,7 +512,6 @@ struct AudioSession* audio_coreaudio_session_create(const char* device_id,
         status = AudioQueueAllocateBuffer(session->queue, bufferByteSize,
                                            &session->buffers[i]);
         if (status != noErr) {
-            log_os_status("AudioQueueAllocateBuffer", status);
             AudioQueueDispose(session->queue, true);
             free(session);
             return NULL;
@@ -667,7 +554,6 @@ int audio_coreaudio_session_start(struct AudioSession* session,
         OSStatus status =
             AudioQueueEnqueueBuffer(session->queue, session->buffers[i], 0, NULL);
         if (status != noErr) {
-            log_os_status("AudioQueueEnqueueBuffer", status);
             atomic_store(&session->running, 0);
             return -1;
         }
@@ -676,7 +562,6 @@ int audio_coreaudio_session_start(struct AudioSession* session,
     // キャプチャを開始
     OSStatus status = AudioQueueStart(session->queue, NULL);
     if (status != noErr) {
-        log_os_status("AudioQueueStart(input)", status);
         atomic_store(&session->running, 0);
         return -1;
     }
@@ -789,15 +674,12 @@ struct PlaybackSession* audio_coreaudio_playback_session_create(const char* devi
     session->format.mFramesPerPacket = 1;
     session->format.mBytesPerPacket = session->format.mBytesPerFrame;
 
-    log_default_device(kAudioHardwarePropertyDefaultOutputDevice, "output default");
-
     // AudioQueue (出力) を作成
     OSStatus status = AudioQueueNewOutput(
         &session->format, audio_output_callback, session, NULL,
         kCFRunLoopCommonModes, 0, &session->queue);
 
     if (status != noErr) {
-        log_os_status("AudioQueueNewOutput", status);
         free(session);
         return NULL;
     }
@@ -806,8 +688,6 @@ struct PlaybackSession* audio_coreaudio_playback_session_create(const char* devi
     if (device_id) {
         AudioDeviceID deviceID = find_device_by_uid(device_id);
         if (deviceID == kAudioObjectUnknown) {
-            fprintf(stderr, "audio_coreaudio: output device not found: %s\n",
-                    device_id);
             AudioQueueDispose(session->queue, true);
             free(session);
             return NULL;
@@ -824,14 +704,11 @@ struct PlaybackSession* audio_coreaudio_playback_session_create(const char* devi
                                    &deviceUID, sizeof(CFStringRef));
         CFRelease(deviceUID);
         if (setStatus != noErr) {
-            log_os_status("AudioQueueSetProperty(CurrentDevice)", setStatus);
             AudioQueueDispose(session->queue, true);
             free(session);
             return NULL;
         }
     }
-
-    log_queue_device(session->queue, "output");
 
     // バッファを作成（10ms 分 x 3）
     // mSampleRate は整数値のサンプルレートなので直接キャストする
@@ -843,7 +720,6 @@ struct PlaybackSession* audio_coreaudio_playback_session_create(const char* devi
         status = AudioQueueAllocateBuffer(session->queue, bufferByteSize,
                                            &session->buffers[i]);
         if (status != noErr) {
-            log_os_status("AudioQueueAllocateBuffer", status);
             AudioQueueDispose(session->queue, true);
             free(session);
             return NULL;
@@ -889,7 +765,6 @@ int audio_coreaudio_playback_session_start(struct PlaybackSession* session,
         OSStatus status =
             AudioQueueEnqueueBuffer(session->queue, session->buffers[i], 0, NULL);
         if (status != noErr) {
-            log_os_status("AudioQueueEnqueueBuffer", status);
             atomic_store(&session->running, 0);
             return -1;
         }
@@ -898,7 +773,6 @@ int audio_coreaudio_playback_session_start(struct PlaybackSession* session,
     // 再生を開始
     OSStatus status = AudioQueueStart(session->queue, NULL);
     if (status != noErr) {
-        log_os_status("AudioQueueStart(output)", status);
         atomic_store(&session->running, 0);
         return -1;
     }
