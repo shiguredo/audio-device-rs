@@ -503,13 +503,19 @@ void audio_pipewire_session_destroy(struct AudioSession* session) {
 
 // セッション開始の失敗時に、作成した stream と core を破棄して thread loop を停止する。
 //
-// thread loop のロックを保持した状態で呼び出す。stream を破棄し、core_listener を
-// remove して core を切断したうえで、ロックの解放と thread loop の停止まで行う。
-// stream と core には破棄後の NULL を代入する。
+// thread loop のロックを保持した状態で呼び出す。stream を切断してからロックを解放し、
+// thread loop の停止で保留中の process invoke を処理した後に stream を破棄する。
+// その後 core_listener を remove して core を切断し、stream と core には NULL を
+// 代入する。
 static void cleanup_failed_session_start(struct pw_thread_loop* thread_loop,
                                          struct pw_stream** stream,
                                          struct spa_hook* core_listener,
                                          struct pw_core** core) {
+    if (*stream) {
+        pw_stream_disconnect(*stream);
+    }
+    pw_thread_loop_unlock(thread_loop);
+    pw_thread_loop_stop(thread_loop);
     if (*stream) {
         pw_stream_destroy(*stream);
         *stream = NULL;
@@ -519,8 +525,6 @@ static void cleanup_failed_session_start(struct pw_thread_loop* thread_loop,
         pw_core_disconnect(*core);
         *core = NULL;
     }
-    pw_thread_loop_unlock(thread_loop);
-    pw_thread_loop_stop(thread_loop);
 }
 
 int audio_pipewire_session_start(struct AudioSession* session,
@@ -695,10 +699,17 @@ void audio_pipewire_session_stop(struct AudioSession* session) {
 
     pw_thread_loop_lock(session->thread_loop);
 
-    // 再 start 時に古い stream と core を参照しないよう、stream を破棄し、
-    // core_listener を remove して core を切断する
+    // thread loop の停止中に process invoke を処理させるため、stream を切断して
+    // からロックを解放する。stream の破棄は thread loop の停止後に行う
     if (session->stream) {
         pw_stream_disconnect(session->stream);
+    }
+
+    pw_thread_loop_unlock(session->thread_loop);
+
+    pw_thread_loop_stop(session->thread_loop);
+
+    if (session->stream) {
         pw_stream_destroy(session->stream);
         session->stream = NULL;
     }
@@ -708,10 +719,6 @@ void audio_pipewire_session_stop(struct AudioSession* session) {
         pw_core_disconnect(session->core);
         session->core = NULL;
     }
-
-    pw_thread_loop_unlock(session->thread_loop);
-
-    pw_thread_loop_stop(session->thread_loop);
 }
 
 int audio_pipewire_session_sample_rate(struct AudioSession* session) {
@@ -1107,10 +1114,17 @@ void audio_pipewire_playback_session_stop(struct PlaybackSession* session) {
 
     pw_thread_loop_lock(session->thread_loop);
 
-    // 再 start 時に古い stream と core を参照しないよう、stream を破棄し、
-    // core_listener を remove して core を切断する
+    // thread loop の停止中に process invoke を処理させるため、stream を切断して
+    // からロックを解放する。stream の破棄は thread loop の停止後に行う
     if (session->stream) {
         pw_stream_disconnect(session->stream);
+    }
+
+    pw_thread_loop_unlock(session->thread_loop);
+
+    pw_thread_loop_stop(session->thread_loop);
+
+    if (session->stream) {
         pw_stream_destroy(session->stream);
         session->stream = NULL;
     }
@@ -1120,10 +1134,6 @@ void audio_pipewire_playback_session_stop(struct PlaybackSession* session) {
         pw_core_disconnect(session->core);
         session->core = NULL;
     }
-
-    pw_thread_loop_unlock(session->thread_loop);
-
-    pw_thread_loop_stop(session->thread_loop);
 }
 
 int audio_pipewire_playback_session_sample_rate(struct PlaybackSession* session) {

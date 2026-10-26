@@ -66,7 +66,7 @@
   - ストリームが STREAMING または PAUSED に遷移しないまま約 10 秒 (待機の粒度により最大約 11 秒) 経過した場合は、セッション開始に失敗する
   - @melpon
 - [FIX] PipeWire のキャプチャ・再生で、stop 後に start を再実行すると SIGSEGV する問題を修正する
-  - stop で stream を破棄し、core_listener を remove して core を切断する
+  - stop では stream を切断して thread loop を停止してから stream を破棄し、core_listener を remove して core を切断する
   - @melpon
 - [FIX] PulseAudio のキャプチャ・再生で、stop 後に start を再実行すると abort する問題を修正する
   - start ごとに mainloop / context / stream を作成し、stop でまとめて破棄する

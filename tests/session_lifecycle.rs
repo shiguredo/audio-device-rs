@@ -23,6 +23,9 @@ use shiguredo_audio_device::{
 /// セッション開始の完了を待つ上限時間。
 const START_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// 1 つのテストで start / stop を繰り返す回数。
+const LIFECYCLE_CYCLES: usize = 10;
+
 /// デフォルトバックエンドの入力デバイス数を返す。
 ///
 /// 列挙に失敗した場合は panic する。
@@ -68,6 +71,14 @@ fn skip_playback() -> bool {
     false
 }
 
+/// セッションの process コールバックを待つ。
+///
+/// デバイスが PAUSED のままなど、コールバックが来ない場合もあるため、
+/// タイムアウトしても続行する。
+fn wait_for_process(receiver: &mpsc::Receiver<()>) {
+    let _ = receiver.recv_timeout(Duration::from_secs(1));
+}
+
 /// ワーカースレッドでセッションを開始し、指定時間内に開始が戻ることを検証する。
 ///
 /// 開始が指定時間内に戻らない場合は panic する。
@@ -108,11 +119,16 @@ fn capture_start_and_restart_after_stop() {
     }
 
     run_start_with_watchdog("キャプチャ", || {
-        let mut capture = AudioCapture::new(AudioCaptureConfig::default(), |_| {})?;
-        capture.start()?;
-        capture.stop();
-        capture.start()?;
-        capture.stop();
+        let (sender, receiver) = mpsc::channel();
+        let mut capture = AudioCapture::new(AudioCaptureConfig::default(), move |_| {
+            let _ = sender.send(());
+        })?;
+
+        for _ in 0..LIFECYCLE_CYCLES {
+            capture.start()?;
+            wait_for_process(&receiver);
+            capture.stop();
+        }
         Ok(())
     });
 }
@@ -127,11 +143,17 @@ fn playback_start_and_restart_after_stop() {
     }
 
     run_start_with_watchdog("再生", || {
-        let mut playback = AudioPlayback::new(AudioPlaybackConfig::default(), |_, _, _| None)?;
-        playback.start()?;
-        playback.stop();
-        playback.start()?;
-        playback.stop();
+        let (sender, receiver) = mpsc::channel();
+        let mut playback = AudioPlayback::new(AudioPlaybackConfig::default(), move |_, _, _| {
+            let _ = sender.send(());
+            None
+        })?;
+
+        for _ in 0..LIFECYCLE_CYCLES {
+            playback.start()?;
+            wait_for_process(&receiver);
+            playback.stop();
+        }
         Ok(())
     });
 }

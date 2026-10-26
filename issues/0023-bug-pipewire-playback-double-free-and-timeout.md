@@ -77,7 +77,7 @@ while (1) {
 
 - 再生セッション開始失敗時のエラーパスから `pw_properties_free(props)` が削除される
 - キャプチャ・再生の両方のストリーム状態待ちループにタイムアウト（10 秒）が設定される
-- タイムアウト後は既存の ERROR/UNCONNECTED パスと同じクリーンアップ（`pw_stream_destroy` → `session->stream = NULL` → `spa_hook_remove` → `pw_core_disconnect` → `session->core = NULL` → `pw_thread_loop_unlock` → `pw_thread_loop_stop`）を経てエラーコード `-5` を返す
+- タイムアウト後は既存の ERROR/UNCONNECTED パスと同じクリーンアップ（`pw_stream_disconnect` → `pw_thread_loop_unlock` → `pw_thread_loop_stop` → `pw_stream_destroy` → `session->stream = NULL` → `spa_hook_remove` → `pw_core_disconnect` → `session->core = NULL`）を経てエラーコード `-5` を返す
 - `cargo clippy` / `cargo test` が通る（PipeWire は Linux 専用のため、macOS 上のテストではこのコードパスは検証されない。Linux CI でのビルド確認、またはキャプチャ側との差分対照によるコードレビューで担保する）
 
 ## 解決方法
