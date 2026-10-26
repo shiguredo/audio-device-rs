@@ -1,7 +1,7 @@
 # audio_pipewire.c stop/start 再実行時の stream・core リークを修正する
 
 - Created: 2026-07-30
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-27
 - Branch: feature/fix-pipewire-stop-start-leak
 - Polished: {YYYY-MM-DD}
 
@@ -32,10 +32,6 @@
 
 ## 解決方法
 
-`src/audio_pipewire.c` の `audio_pipewire_session_stop` と `audio_pipewire_playback_session_stop` 関数内:
-
-1. `pw_stream_disconnect` の後に `pw_stream_destroy(session->stream)` を呼び、`session->stream = NULL` を代入する
-2. `spa_hook_remove(&session->core_listener)` を呼ぶ
-3. `pw_core_disconnect(session->core)` を呼び、`session->core = NULL` を代入する
-
-`session_start` 側でも、既存の stream/core が残っている場合に先に破棄する防御を追加する。
+- stop と start 失敗時の破棄処理を `destroy_session_resources` に共通化した。
+- stop では stream を disconnect してから thread loop を停止し、停止後に stream を destroy する。その後 `core_listener` を remove して core を disconnect し、stream と core に NULL を代入する。
+- stop 後の start 再実行で古い stream と core が残らない。
