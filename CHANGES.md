@@ -83,6 +83,8 @@
 - [FIX] PipeWire キャプチャで `chunk->size` がバッファ容量を超えた場合にバッファ外を読み取る問題を修正する
   - `chunk->size` を `maxsize` にクランプする
   - @melpon
+- [FIX] macOS の CoreAudio で、デバイス UID の変換に失敗した場合に対象デバイスなしとして扱うようにする
+  - @melpon
 
 ### misc
 

@@ -414,7 +414,12 @@ static AudioDeviceID find_device_by_uid(const char* uid) {
     }
 
     AudioDeviceID foundDevice = kAudioObjectUnknown;
+    // uid が UTF-8 として解釈できない場合、targetUID は nil になる
     NSString* targetUID = [NSString stringWithUTF8String:uid];
+    if (!targetUID) {
+        free(deviceIDs);
+        return kAudioObjectUnknown;
+    }
 
     for (UInt32 i = 0; i < deviceCount; i++) {
         CFStringRef deviceUID = NULL;
