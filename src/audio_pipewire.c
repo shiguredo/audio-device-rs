@@ -11,7 +11,7 @@
 
 #include "audio_pipewire.h"
 
-// ストリームが状態遷移するまで待機する上限 (秒)
+// ストリーム状態の待機タイムアウト
 #define STREAM_STATE_TIMEOUT_SEC 10
 
 // AudioDevice 構造体
@@ -388,6 +388,7 @@ static void on_stream_state_changed(void* userdata,
 
     switch (state) {
         case PW_STREAM_STATE_STREAMING:
+        case PW_STREAM_STATE_PAUSED:
         case PW_STREAM_STATE_ERROR:
         case PW_STREAM_STATE_UNCONNECTED:
             pw_thread_loop_signal(session->thread_loop, false);
@@ -500,6 +501,28 @@ void audio_pipewire_session_destroy(struct AudioSession* session) {
     free(session);
 }
 
+// セッション開始の失敗時に、作成した stream と core を破棄して thread loop を停止する。
+//
+// thread loop のロックを保持した状態で呼び出す。stream を破棄し、core_listener を
+// remove して core を切断したうえで、ロックの解放と thread loop の停止まで行う。
+// stream と core には破棄後の NULL を代入する。
+static void cleanup_failed_session_start(struct pw_thread_loop* thread_loop,
+                                         struct pw_stream** stream,
+                                         struct spa_hook* core_listener,
+                                         struct pw_core** core) {
+    if (*stream) {
+        pw_stream_destroy(*stream);
+        *stream = NULL;
+    }
+    if (*core) {
+        spa_hook_remove(core_listener);
+        pw_core_disconnect(*core);
+        *core = NULL;
+    }
+    pw_thread_loop_unlock(thread_loop);
+    pw_thread_loop_stop(thread_loop);
+}
+
 int audio_pipewire_session_start(struct AudioSession* session,
                         AudioFrameCallback callback,
                         void* user_data) {
@@ -555,6 +578,7 @@ int audio_pipewire_session_start(struct AudioSession* session,
     }
 
     // ストリームを作成する
+    // props の所有権は pw_stream_new に移るため、呼び出し後に解放してはいけない
     session->stream =
         pw_stream_new(session->core, "audio-capture", props);
     if (!session->stream) {
@@ -590,21 +614,21 @@ int audio_pipewire_session_start(struct AudioSession* session,
         params, 1);
 
     if (result < 0) {
-        pw_stream_destroy(session->stream);
-        session->stream = NULL;
-        spa_hook_remove(&session->core_listener);
-        pw_core_disconnect(session->core);
-        session->core = NULL;
-        pw_thread_loop_unlock(session->thread_loop);
-        pw_thread_loop_stop(session->thread_loop);
+        cleanup_failed_session_start(session->thread_loop, &session->stream,
+                                     &session->core_listener, &session->core);
         return -5;
     }
 
-    // 状態遷移の待機が終わらない場合に備え、ループ開始からの経過時間で上限を設ける
+    // ストリーム状態が確定しないまま待機が続く場合に備え、
+    // ループ開始からの経過時間で上限を設ける
     struct timespec start_time;
-    clock_gettime(CLOCK_MONOTONIC, &start_time);
+    if (clock_gettime(CLOCK_MONOTONIC, &start_time) != 0) {
+        cleanup_failed_session_start(session->thread_loop, &session->stream,
+                                     &session->core_listener, &session->core);
+        return -5;
+    }
 
-    // ストリームが streaming 状態になるまで待機する
+    // ストリームが STREAMING または PAUSED になるまで待機する
     while (1) {
         enum pw_stream_state state = pw_stream_get_state(
             session->stream, NULL);
@@ -612,34 +636,46 @@ int audio_pipewire_session_start(struct AudioSession* session,
             break;
         }
         if (state == PW_STREAM_STATE_PAUSED) {
-            pw_stream_set_active(session->stream, true);
+            if (pw_stream_set_active(session->stream, true) < 0) {
+                cleanup_failed_session_start(
+                    session->thread_loop, &session->stream,
+                    &session->core_listener, &session->core);
+                return -5;
+            }
             break;
         }
         if (state == PW_STREAM_STATE_ERROR ||
             state == PW_STREAM_STATE_UNCONNECTED) {
-            pw_stream_destroy(session->stream);
-            session->stream = NULL;
-            spa_hook_remove(&session->core_listener);
-            pw_core_disconnect(session->core);
-            session->core = NULL;
-            pw_thread_loop_unlock(session->thread_loop);
-            pw_thread_loop_stop(session->thread_loop);
+            cleanup_failed_session_start(
+                session->thread_loop, &session->stream,
+                &session->core_listener, &session->core);
             return -5;
         }
 
-        // シグナルが来ない場合でも経過時間を確認できるよう、1 秒だけ待機する
-        pw_thread_loop_timed_wait(session->thread_loop, 1);
-
         struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        if (now.tv_sec - start_time.tv_sec >= STREAM_STATE_TIMEOUT_SEC) {
-            pw_stream_destroy(session->stream);
-            session->stream = NULL;
-            spa_hook_remove(&session->core_listener);
-            pw_core_disconnect(session->core);
-            session->core = NULL;
-            pw_thread_loop_unlock(session->thread_loop);
-            pw_thread_loop_stop(session->thread_loop);
+        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+            cleanup_failed_session_start(
+                session->thread_loop, &session->stream,
+                &session->core_listener, &session->core);
+            return -5;
+        }
+        int64_t elapsed_ns =
+            (int64_t)(now.tv_sec - start_time.tv_sec) * 1000000000LL +
+            (now.tv_nsec - start_time.tv_nsec);
+        if (elapsed_ns >=
+            (int64_t)STREAM_STATE_TIMEOUT_SEC * 1000000000LL) {
+            cleanup_failed_session_start(
+                session->thread_loop, &session->stream,
+                &session->core_listener, &session->core);
+            return -5;
+        }
+
+        // 状態変化のシグナルを取りこぼしても状態と経過時間を確認できるよう、
+        // 最大 1 秒待機する。戻り値は 0 = シグナル、正 = タイムアウト、負 = エラー
+        if (pw_thread_loop_timed_wait(session->thread_loop, 1) < 0) {
+            cleanup_failed_session_start(
+                session->thread_loop, &session->stream,
+                &session->core_listener, &session->core);
             return -5;
         }
     }
@@ -659,8 +695,18 @@ void audio_pipewire_session_stop(struct AudioSession* session) {
 
     pw_thread_loop_lock(session->thread_loop);
 
+    // 再 start 時に古い stream と core を参照しないよう、stream を破棄し、
+    // core_listener を remove して core を切断する
     if (session->stream) {
         pw_stream_disconnect(session->stream);
+        pw_stream_destroy(session->stream);
+        session->stream = NULL;
+    }
+
+    if (session->core) {
+        spa_hook_remove(&session->core_listener);
+        pw_core_disconnect(session->core);
+        session->core = NULL;
     }
 
     pw_thread_loop_unlock(session->thread_loop);
@@ -775,6 +821,7 @@ static void playback_on_stream_state_changed(void* userdata,
 
     switch (state) {
         case PW_STREAM_STATE_STREAMING:
+        case PW_STREAM_STATE_PAUSED:
         case PW_STREAM_STATE_ERROR:
         case PW_STREAM_STATE_UNCONNECTED:
             pw_thread_loop_signal(session->thread_loop, false);
@@ -941,7 +988,7 @@ int audio_pipewire_playback_session_start(struct PlaybackSession* session,
     }
 
     // ストリームを作成する
-    // pw_stream_new は成否に関わらず props の所有権を取得するため、失敗時も解放しない
+    // props の所有権は pw_stream_new に移るため、呼び出し後に解放してはいけない
     session->stream =
         pw_stream_new(session->core, "audio-playback", props);
     if (!session->stream) {
@@ -978,59 +1025,69 @@ int audio_pipewire_playback_session_start(struct PlaybackSession* session,
         params, 1);
 
     if (result < 0) {
-        pw_stream_destroy(session->stream);
-        session->stream = NULL;
-        spa_hook_remove(&session->core_listener);
-        pw_core_disconnect(session->core);
-        session->core = NULL;
-        pw_thread_loop_unlock(session->thread_loop);
-        pw_thread_loop_stop(session->thread_loop);
+        cleanup_failed_session_start(session->thread_loop, &session->stream,
+                                     &session->core_listener, &session->core);
         return -5;
     }
 
-    // 状態遷移の待機が終わらない場合に備え、ループ開始からの経過時間で上限を設ける
+    // ストリーム状態が確定しないまま待機が続く場合に備え、
+    // ループ開始からの経過時間で上限を設ける
     struct timespec start_time;
-    clock_gettime(CLOCK_MONOTONIC, &start_time);
+    if (clock_gettime(CLOCK_MONOTONIC, &start_time) != 0) {
+        cleanup_failed_session_start(session->thread_loop, &session->stream,
+                                     &session->core_listener, &session->core);
+        return -5;
+    }
 
-    // ストリームが streaming 状態になるまで待機する
+    // ストリームが STREAMING または PAUSED になるまで待機する
     while (1) {
         enum pw_stream_state state = pw_stream_get_state(
             session->stream, NULL);
         if (state == PW_STREAM_STATE_STREAMING) {
             break;
         }
-        // PipeWire のバージョンや環境によってはストリームが PAUSED に遷移する。
-        // この場合 activate してからループを抜ける。
-        // セッションマネージャーが利用可能になれば自動的に streaming に遷移する。
+        // PAUSED でもストリームは作成済みなので、activate して開始成功として扱う
         if (state == PW_STREAM_STATE_PAUSED) {
-            pw_stream_set_active(session->stream, true);
+            if (pw_stream_set_active(session->stream, true) < 0) {
+                cleanup_failed_session_start(
+                    session->thread_loop, &session->stream,
+                    &session->core_listener, &session->core);
+                return -5;
+            }
             break;
         }
         if (state == PW_STREAM_STATE_ERROR ||
             state == PW_STREAM_STATE_UNCONNECTED) {
-            pw_stream_destroy(session->stream);
-            session->stream = NULL;
-            spa_hook_remove(&session->core_listener);
-            pw_core_disconnect(session->core);
-            session->core = NULL;
-            pw_thread_loop_unlock(session->thread_loop);
-            pw_thread_loop_stop(session->thread_loop);
+            cleanup_failed_session_start(
+                session->thread_loop, &session->stream,
+                &session->core_listener, &session->core);
             return -5;
         }
 
-        // シグナルが来ない場合でも経過時間を確認できるよう、1 秒だけ待機する
-        pw_thread_loop_timed_wait(session->thread_loop, 1);
-
         struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        if (now.tv_sec - start_time.tv_sec >= STREAM_STATE_TIMEOUT_SEC) {
-            pw_stream_destroy(session->stream);
-            session->stream = NULL;
-            spa_hook_remove(&session->core_listener);
-            pw_core_disconnect(session->core);
-            session->core = NULL;
-            pw_thread_loop_unlock(session->thread_loop);
-            pw_thread_loop_stop(session->thread_loop);
+        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+            cleanup_failed_session_start(
+                session->thread_loop, &session->stream,
+                &session->core_listener, &session->core);
+            return -5;
+        }
+        int64_t elapsed_ns =
+            (int64_t)(now.tv_sec - start_time.tv_sec) * 1000000000LL +
+            (now.tv_nsec - start_time.tv_nsec);
+        if (elapsed_ns >=
+            (int64_t)STREAM_STATE_TIMEOUT_SEC * 1000000000LL) {
+            cleanup_failed_session_start(
+                session->thread_loop, &session->stream,
+                &session->core_listener, &session->core);
+            return -5;
+        }
+
+        // 状態変化のシグナルを取りこぼしても状態と経過時間を確認できるよう、
+        // 最大 1 秒待機する。戻り値は 0 = シグナル、正 = タイムアウト、負 = エラー
+        if (pw_thread_loop_timed_wait(session->thread_loop, 1) < 0) {
+            cleanup_failed_session_start(
+                session->thread_loop, &session->stream,
+                &session->core_listener, &session->core);
             return -5;
         }
     }
@@ -1050,8 +1107,18 @@ void audio_pipewire_playback_session_stop(struct PlaybackSession* session) {
 
     pw_thread_loop_lock(session->thread_loop);
 
+    // 再 start 時に古い stream と core を参照しないよう、stream を破棄し、
+    // core_listener を remove して core を切断する
     if (session->stream) {
         pw_stream_disconnect(session->stream);
+        pw_stream_destroy(session->stream);
+        session->stream = NULL;
+    }
+
+    if (session->core) {
+        spa_hook_remove(&session->core_listener);
+        pw_core_disconnect(session->core);
+        session->core = NULL;
     }
 
     pw_thread_loop_unlock(session->thread_loop);

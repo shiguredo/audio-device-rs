@@ -60,14 +60,22 @@
   - @melpon
 - [FIX] PipeWire 再生でバッファ容量ではなく PipeWire が要求したサンプル数を使うように修正する
   - @melpon
-- [FIX] PipeWire 再生セッションの開始に失敗したときに `pw_properties` を二重解放する問題を修正する
+- [FIX] PipeWire 再生セッションの開始で `pw_stream_new` が失敗したときに `pw_properties` を二重解放する問題を修正する
   - @melpon
-- [FIX] PipeWire のストリーム状態待機がタイムアウトせずハングする問題を修正する
-  - 10 秒以内にストリーム状態が確定しない場合はセッション開始に失敗する
+- [FIX] PipeWire のキャプチャ・再生セッション開始で、ストリーム状態の待機がタイムアウトせずハングする問題を修正する
+  - ストリームが STREAMING または PAUSED に遷移しないまま約 10 秒 (待機の粒度により最大約 11 秒) 経過した場合は、セッション開始に失敗する
+  - @melpon
+- [FIX] PipeWire のキャプチャ・再生で、stop 後に start を再実行すると SIGSEGV する問題を修正する
+  - stop で stream を破棄し、core_listener を remove して core を切断する
+  - @melpon
+- [FIX] PulseAudio のキャプチャ・再生で、stop 後に start を再実行すると abort する問題を修正する
+  - start ごとに mainloop / context / stream を作成し、stop でまとめて破棄する
   - @melpon
 
 ### misc
 
+- [ADD] デフォルトバックエンドのセッション開始・停止・再開始がハング・クラッシュしないことを検証するテストを追加する
+  - @melpon
 - [ADD] 実機の入力デバイスと出力デバイスでキャプチャと再生のタイミングを検証するテストを追加する
   - @melpon
 - [ADD] `write_playback_frame_to_buffer` の直接テストを追加する
