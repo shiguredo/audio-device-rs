@@ -359,7 +359,14 @@ static void on_process(void* userdata) {
     }
 
     const void* data = spa_buf->datas[0].data;
+    // chunk->size は PipeWire サーバが書き込む値であり、data が指す領域の大きさ
+    // (maxsize) を超える可能性がある。超えた値を読み取るとバッファ外を参照する
+    // ため、maxsize にクランプする
+    uint32_t maxsize = spa_buf->datas[0].maxsize;
     uint32_t size = spa_buf->datas[0].chunk->size;
+    if (size > maxsize) {
+        size = maxsize;
+    }
 
     if (size > 0 && session->callback) {
         int bytes_per_sample = 2;  // S16 の 1 サンプルは 2 バイト

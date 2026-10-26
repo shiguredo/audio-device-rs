@@ -80,6 +80,9 @@
 - [FIX] PulseAudio のキャプチャ・再生で、stop 後に start を再実行すると abort する問題を修正する
   - start ごとに mainloop / context / stream を作成し、stop でまとめて破棄する
   - @melpon
+- [FIX] PipeWire キャプチャで `chunk->size` がバッファ容量を超えた場合にバッファ外を読み取る問題を修正する
+  - `chunk->size` を `maxsize` にクランプする
+  - @melpon
 
 ### misc
 
