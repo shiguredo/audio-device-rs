@@ -2,7 +2,7 @@
 
 - Priority: High
 - Created: 2026-07-20
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-27
 - Model: Qwen 3
 - Branch: feature/fix-pipewire-playback-double-free-and-timeout
 - Polished: 2026-07-21
@@ -77,17 +77,15 @@ while (1) {
 
 - 再生セッション開始失敗時のエラーパスから `pw_properties_free(props)` が削除される
 - キャプチャ・再生の両方のストリーム状態待ちループにタイムアウト（10 秒）が設定される
-- タイムアウト後は既存の ERROR/UNCONNECTED パスと同じクリーンアップ（`pw_stream_destroy` → `session->stream = NULL` → `spa_hook_remove` → `pw_core_disconnect` → `session->core = NULL` → `pw_thread_loop_unlock` → `pw_thread_loop_stop`）を経てエラーコード `-5` を返す
+- タイムアウト後は既存の ERROR/UNCONNECTED パスと同じクリーンアップ（`pw_stream_disconnect` → `pw_thread_loop_unlock` → `pw_thread_loop_stop` → `pw_stream_destroy` → `session->stream = NULL` → `spa_hook_remove` → `pw_core_disconnect` → `session->core = NULL`）を経てエラーコード `-5` を返す
 - `cargo clippy` / `cargo test` が通る（PipeWire は Linux 専用のため、macOS 上のテストではこのコードパスは検証されない。Linux CI でのビルド確認、またはキャプチャ側との差分対照によるコードレビューで担保する）
 
 ## 解決方法
 
-1. `audio_pipewire_playback_session_start` の 859 行目 `pw_properties_free(props)` を削除する
-2. キャプチャ側（546-568 行目）と再生側（904-929 行目）の `while (1)` ループを以下のように変更する（`time.h` は 7 行目で既にインクルード済み、`clock_gettime` も 311 行目で既に使用されているため新規インクルード不要）:
-   - ループ開始前に `struct timespec start_time; clock_gettime(CLOCK_MONOTONIC, &start_time);` で開始時刻を記録する
-   - `pw_thread_loop_wait(session->thread_loop)` を `pw_thread_loop_timedwait(session->thread_loop, 1)` に置換する（1 秒ごとに経過時刻を確認する。`timedwait` の戻り値は本設計では不要なため無視する。既存の `pw_thread_loop_wait` も戻り値を無視しており同じ呼び出し規約）
-   - `timedwait` の直後に `clock_gettime(CLOCK_MONOTONIC, &now)` を呼び、`now.tv_sec - start_time.tv_sec >= STREAM_STATE_TIMEOUT_SEC` ならタイムアウトとして ERROR/UNCONNECTED パスと同じクリーンアップを経て `return -5` する
-3. `#include "audio_pipewire.h"`（12 行目）の直後に空行を挟んで `#define STREAM_STATE_TIMEOUT_SEC 10` を追加する
+- `audio_pipewire_playback_session_start` から `pw_properties_free(props)` を削除した。`pw_stream_new` は成否にかかわらず `props` の所有権を取得するため、呼び出し後に解放してはいけない。
+- キャプチャ・再生のストリーム状態待機を `wait_for_stream_ready` に共通化した。`STREAM_STATE_TIMEOUT_SEC` (10 秒) を `CLOCK_MONOTONIC` の経過時間で判定し、タイムアウト時は `destroy_session_resources` で stream と core を破棄する。
+- start 失敗時と stop の破棄処理を `destroy_session_resources` に共通化し、disconnect → unlock → thread loop stop → stream destroy → core disconnect の順序に統一した。
+- コールバックからの stop は `Error::SessionStopFailed`、コールバックからの Drop は panic とする再入防止を追加した。
 
 ## 後方互換
 

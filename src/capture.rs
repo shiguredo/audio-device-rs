@@ -13,6 +13,9 @@ use crate::capture_ffi::FfiCaptureImpl;
 use crate::capture_wasapi::WasapiCaptureImpl;
 
 /// オーディオキャプチャ。
+///
+/// オーディオコールバックからこの値を Drop してはならない。
+/// 破棄した場合は panic する。
 pub struct AudioCapture(AudioCaptureInner);
 
 pub(crate) enum AudioCaptureInner {
@@ -132,7 +135,15 @@ impl AudioCapture {
     }
 
     /// キャプチャを停止する。
-    pub fn stop(&mut self) {
+    ///
+    /// すでに停止している場合は何もしない。
+    ///
+    /// # Errors
+    ///
+    /// 停止に失敗した場合に `Error::SessionStopFailed` を返す。
+    /// オーディオコールバックから呼び出した場合、停止処理を行わず
+    /// `Error::SessionStopFailed` を返す。
+    pub fn stop(&mut self) -> Result<()> {
         match &mut self.0 {
             #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
             AudioCaptureInner::Ffi(inner) => inner.stop(),

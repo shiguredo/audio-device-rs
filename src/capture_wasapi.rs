@@ -180,7 +180,17 @@ impl WasapiCaptureImpl {
         Ok(())
     }
 
-    pub fn stop(&mut self) {
+    pub fn stop(&mut self) -> Result<()> {
+        // コールバックはキャプチャスレッド上で動くため、再入 stop は受け付けない
+        if self
+            .capture_thread
+            .as_ref()
+            .is_some_and(|handle| handle.thread().id() == std::thread::current().id())
+        {
+            // コールバックからの再入 stop は拒否する
+            return Err(Error::SessionStopFailed);
+        }
+
         if let Some(context) = &self.context
             && context.running.load(Ordering::Acquire)
         {
@@ -205,6 +215,8 @@ impl WasapiCaptureImpl {
                 }
             }
         }
+
+        Ok(())
     }
 
     pub fn config(&self) -> &AudioCaptureConfig {
@@ -222,7 +234,15 @@ impl WasapiCaptureImpl {
 
 impl Drop for WasapiCaptureImpl {
     fn drop(&mut self) {
-        self.stop();
+        if self
+            .capture_thread
+            .as_ref()
+            .is_some_and(|handle| handle.thread().id() == std::thread::current().id())
+        {
+            panic!("AudioCapture must not be dropped from its callback");
+        }
+
+        let _ = self.stop();
         if let Some(session) = self.session.take() {
             unsafe {
                 let _ = CloseHandle(session.event_handle);
