@@ -1,7 +1,7 @@
 # audio_pipewire.c キャプチャ on_process の chunk->size 境界未検証を修正する
 
 - Created: 2026-07-30
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-27
 - Branch: feature/fix-pipewire-capture-chunk-size
 - Polished: {YYYY-MM-DD}
 
@@ -33,11 +33,14 @@ PipeWire サーバが `chunk->size > maxsize` を設定した場合、`data` ポ
 
 ## 解決方法
 
-`src/audio_pipewire.c` の `on_process` 関数内で、`chunk->size` 読み取り後にクランプを追加する:
+`src/audio_pipewire.c` の `on_process` 関数内で、`chunk->size` を読み取った直後に `maxsize` を超える場合は `maxsize` にクランプする:
 
 ```c
+uint32_t maxsize = spa_buf->datas[0].maxsize;
 uint32_t size = spa_buf->datas[0].chunk->size;
-if (size > spa_buf->datas[0].maxsize) {
-    size = spa_buf->datas[0].maxsize;
+if (size > maxsize) {
+    size = maxsize;
 }
 ```
+
+これにより、PipeWire サーバが `chunk->size > maxsize` を設定しても、コールバックへ渡す読み取りサイズがバッファ容量を超えない。
