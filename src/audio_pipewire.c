@@ -1,7 +1,6 @@
 // PipeWire を使った Linux 用オーディオキャプチャ・再生実装
 
 #include <stdatomic.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -13,6 +12,13 @@
 
 // ストリーム状態の待機タイムアウト
 #define STREAM_STATE_TIMEOUT_SEC 10
+
+// 状態変化のシグナルを取りこぼしても状態を再確認するための待機間隔
+#define STREAM_STATE_POLL_INTERVAL_SEC 1
+
+// 待機ループのタイムアウト (ナノ秒)
+#define STREAM_STATE_TIMEOUT_NS \
+    ((int64_t)STREAM_STATE_TIMEOUT_SEC * SPA_NSEC_PER_SEC)
 
 // AudioDevice 構造体
 struct AudioDevice {
@@ -37,6 +43,8 @@ struct AudioSession {
     int sample_rate;
     int channels;
     atomic_int running;
+    // core の error イベントで受けたエラーコード
+    atomic_int core_error;
     // 直前にコールバックへ渡したバッファのタイムスタンプとフレーム数
     int64_t last_timestamp_us;
     int last_frames;
@@ -404,28 +412,20 @@ static const struct pw_stream_events stream_events = {
     .state_changed = on_stream_state_changed,
 };
 
-// core の done イベント (セッション接続用)
-static void session_core_done(void* data, uint32_t id, int seq) {
-    (void)id;
-    (void)seq;
-    struct AudioSession* session = data;
-    pw_thread_loop_signal(session->thread_loop, false);
-}
-
 // core の error イベント
 static void session_core_error(void* data, uint32_t id, int seq, int res,
                                const char* message) {
     (void)id;
     (void)seq;
-    (void)res;
     (void)message;
     struct AudioSession* session = data;
+    // C API はエラーコードのみを返すため、メッセージは保持しない
+    atomic_store(&session->core_error, res);
     pw_thread_loop_signal(session->thread_loop, false);
 }
 
 static const struct pw_core_events session_core_events = {
     PW_VERSION_CORE_EVENTS,
-    .done = session_core_done,
     .error = session_core_error,
 };
 
@@ -450,6 +450,7 @@ struct AudioSession* audio_pipewire_session_create(const char* device_id, int sa
     session->channels = channels;
     session->device_id = device_id ? strdup(device_id) : NULL;
     atomic_init(&session->running, 0);
+    atomic_init(&session->core_error, 0);
 
     // thread loop を作成する
     session->thread_loop = pw_thread_loop_new("shiguredo-audio", NULL);
@@ -476,41 +477,27 @@ void audio_pipewire_session_destroy(struct AudioSession* session) {
         return;
     }
 
-    if (atomic_load(&session->running)) {
-        audio_pipewire_session_stop(session);
-    }
+    // 実行中でも破棄できるよう、停止してからリソースを破棄する
+    audio_pipewire_session_stop(session);
 
-    if (session->stream) {
-        pw_stream_destroy(session->stream);
-    }
-
-    if (session->core) {
-        spa_hook_remove(&session->core_listener);
-        pw_core_disconnect(session->core);
-    }
-
-    if (session->context) {
-        pw_context_destroy(session->context);
-    }
-
-    if (session->thread_loop) {
-        pw_thread_loop_destroy(session->thread_loop);
-    }
+    pw_context_destroy(session->context);
+    pw_thread_loop_destroy(session->thread_loop);
 
     free(session->device_id);
     free(session);
 }
 
-// セッション開始の失敗時に、作成した stream と core を破棄して thread loop を停止する。
+// セッションの stream と core を破棄して thread loop を停止する。
 //
-// thread loop のロックを保持した状態で呼び出す。stream を切断してからロックを解放し、
-// thread loop の停止で保留中の process invoke を処理した後に stream を破棄する。
-// その後 core_listener を remove して core を切断し、stream と core には NULL を
-// 代入する。
-static void cleanup_failed_session_start(struct pw_thread_loop* thread_loop,
-                                         struct pw_stream** stream,
-                                         struct spa_hook* core_listener,
-                                         struct pw_core** core) {
+// thread loop のロックを保持した状態で呼び出す。stream を切断してからロックを
+// 解放し、thread loop の停止で保留中の process invoke を処理した後に stream を
+// 破棄する。停止前に stream を破棄すると process invoke が破棄済みの stream を
+// 参照するため、この順序でなければならない。その後 core_listener を remove して
+// core を切断し、stream と core には NULL を代入する。
+static void destroy_session_resources(struct pw_thread_loop* thread_loop,
+                                      struct pw_stream** stream,
+                                      struct spa_hook* core_listener,
+                                      struct pw_core** core) {
     if (*stream) {
         pw_stream_disconnect(*stream);
     }
@@ -527,15 +514,74 @@ static void cleanup_failed_session_start(struct pw_thread_loop* thread_loop,
     }
 }
 
+// ストリームが STREAMING または PAUSED になるまで待機する。
+//
+// thread loop のロックを保持した状態で呼び出す。成功時は 0、失敗時は
+// AudioPipeWireResult の負の値を返す。失敗時の破棄は呼び出し側が行う。
+//
+// pw_thread_loop_timed_wait は CLOCK_REALTIME の cond を使うが、経過時間は
+// CLOCK_MONOTONIC で判定する。システム時刻の後退やサスペンドを含む環境では
+// STREAM_STATE_TIMEOUT_SEC が厳密な上限にならない。
+static int wait_for_stream_ready(struct pw_thread_loop* thread_loop,
+                                 struct pw_stream* stream,
+                                 atomic_int* core_error) {
+    struct timespec start_time;
+    if (clock_gettime(CLOCK_MONOTONIC, &start_time) != 0) {
+        return AUDIO_PIPEWIRE_ERROR_CLOCK;
+    }
+
+    while (1) {
+        if (atomic_load(core_error) < 0) {
+            return AUDIO_PIPEWIRE_ERROR_CORE;
+        }
+
+        enum pw_stream_state state = pw_stream_get_state(stream, NULL);
+        if (state == PW_STREAM_STATE_STREAMING) {
+            return AUDIO_PIPEWIRE_RESULT_OK;
+        }
+        // PAUSED でもストリームは作成済みなので、activate して開始成功として扱う
+        if (state == PW_STREAM_STATE_PAUSED) {
+            if (pw_stream_set_active(stream, true) < 0) {
+                return AUDIO_PIPEWIRE_ERROR_SET_ACTIVE;
+            }
+            return AUDIO_PIPEWIRE_RESULT_OK;
+        }
+        if (state == PW_STREAM_STATE_ERROR ||
+            state == PW_STREAM_STATE_UNCONNECTED) {
+            return AUDIO_PIPEWIRE_ERROR_STREAM_STATE;
+        }
+
+        struct timespec now;
+        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+            return AUDIO_PIPEWIRE_ERROR_CLOCK;
+        }
+        int64_t elapsed_ns =
+            (int64_t)(now.tv_sec - start_time.tv_sec) * SPA_NSEC_PER_SEC +
+            (now.tv_nsec - start_time.tv_nsec);
+        if (elapsed_ns >= STREAM_STATE_TIMEOUT_NS) {
+            return AUDIO_PIPEWIRE_ERROR_TIMEOUT;
+        }
+
+        // 状態変化のシグナルを取りこぼしても状態と経過時間を確認できるよう、
+        // 最大 STREAM_STATE_POLL_INTERVAL_SEC 秒待機する。戻り値は 0 = シグナル、
+        // 正 = タイムアウト、負 = エラー
+        int wait_result = pw_thread_loop_timed_wait(
+            thread_loop, STREAM_STATE_POLL_INTERVAL_SEC);
+        if (wait_result < 0) {
+            return AUDIO_PIPEWIRE_ERROR_WAIT;
+        }
+    }
+}
+
 int audio_pipewire_session_start(struct AudioSession* session,
                         AudioFrameCallback callback,
                         void* user_data) {
     if (!session || !callback) {
-        return -1;
+        return AUDIO_PIPEWIRE_ERROR_INVALID_ARGUMENT;
     }
 
     if (atomic_load(&session->running)) {
-        return 0;
+        return AUDIO_PIPEWIRE_RESULT_OK;
     }
 
     // 前回のストリームのタイムスタンプを引き継がないよう、開始時に状態をリセットする
@@ -546,17 +592,21 @@ int audio_pipewire_session_start(struct AudioSession* session,
 
     // thread loop を開始する
     if (pw_thread_loop_start(session->thread_loop) < 0) {
-        return -2;
+        return AUDIO_PIPEWIRE_ERROR_THREAD_LOOP_START;
     }
 
     pw_thread_loop_lock(session->thread_loop);
 
+    int result = AUDIO_PIPEWIRE_RESULT_OK;
+    struct pw_properties* props = NULL;
+
+    atomic_store(&session->core_error, 0);
+
     // PipeWire に接続する
     session->core = pw_context_connect(session->context, NULL, 0);
     if (!session->core) {
-        pw_thread_loop_unlock(session->thread_loop);
-        pw_thread_loop_stop(session->thread_loop);
-        return -3;
+        result = AUDIO_PIPEWIRE_ERROR_CONTEXT_CONNECT;
+        goto fail;
     }
 
     spa_zero(session->core_listener);
@@ -564,16 +614,12 @@ int audio_pipewire_session_start(struct AudioSession* session,
                          &session_core_events, session);
 
     // ストリームのプロパティを設定する
-    struct pw_properties* props =
-        pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio",
-                          PW_KEY_MEDIA_CATEGORY, "Capture",
-                          PW_KEY_MEDIA_ROLE, "Communication", NULL);
+    props = pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio",
+                              PW_KEY_MEDIA_CATEGORY, "Capture",
+                              PW_KEY_MEDIA_ROLE, "Communication", NULL);
     if (!props) {
-        pw_core_disconnect(session->core);
-        session->core = NULL;
-        pw_thread_loop_unlock(session->thread_loop);
-        pw_thread_loop_stop(session->thread_loop);
-        return -4;
+        result = AUDIO_PIPEWIRE_ERROR_PROPERTIES;
+        goto fail;
     }
 
     if (session->device_id) {
@@ -586,11 +632,8 @@ int audio_pipewire_session_start(struct AudioSession* session,
     session->stream =
         pw_stream_new(session->core, "audio-capture", props);
     if (!session->stream) {
-        pw_core_disconnect(session->core);
-        session->core = NULL;
-        pw_thread_loop_unlock(session->thread_loop);
-        pw_thread_loop_stop(session->thread_loop);
-        return -4;
+        result = AUDIO_PIPEWIRE_ERROR_STREAM_CREATE;
+        goto fail;
     }
 
     spa_zero(session->stream_listener);
@@ -612,82 +655,28 @@ int audio_pipewire_session_start(struct AudioSession* session,
                                            &audio_info);
 
     // ストリームを接続する (PW_STREAM_FLAG_RT_PROCESS は使わない)
-    int result = pw_stream_connect(
-        session->stream, PW_DIRECTION_INPUT, PW_ID_ANY,
-        PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS,
-        params, 1);
+    if (pw_stream_connect(session->stream, PW_DIRECTION_INPUT, PW_ID_ANY,
+                          PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS,
+                          params, 1) < 0) {
+        result = AUDIO_PIPEWIRE_ERROR_STREAM_CONNECT;
+        goto fail;
+    }
 
+    result = wait_for_stream_ready(session->thread_loop, session->stream,
+                                   &session->core_error);
     if (result < 0) {
-        cleanup_failed_session_start(session->thread_loop, &session->stream,
-                                     &session->core_listener, &session->core);
-        return -5;
-    }
-
-    // ストリーム状態が確定しないまま待機が続く場合に備え、
-    // ループ開始からの経過時間で上限を設ける
-    struct timespec start_time;
-    if (clock_gettime(CLOCK_MONOTONIC, &start_time) != 0) {
-        cleanup_failed_session_start(session->thread_loop, &session->stream,
-                                     &session->core_listener, &session->core);
-        return -5;
-    }
-
-    // ストリームが STREAMING または PAUSED になるまで待機する
-    while (1) {
-        enum pw_stream_state state = pw_stream_get_state(
-            session->stream, NULL);
-        if (state == PW_STREAM_STATE_STREAMING) {
-            break;
-        }
-        if (state == PW_STREAM_STATE_PAUSED) {
-            if (pw_stream_set_active(session->stream, true) < 0) {
-                cleanup_failed_session_start(
-                    session->thread_loop, &session->stream,
-                    &session->core_listener, &session->core);
-                return -5;
-            }
-            break;
-        }
-        if (state == PW_STREAM_STATE_ERROR ||
-            state == PW_STREAM_STATE_UNCONNECTED) {
-            cleanup_failed_session_start(
-                session->thread_loop, &session->stream,
-                &session->core_listener, &session->core);
-            return -5;
-        }
-
-        struct timespec now;
-        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
-            cleanup_failed_session_start(
-                session->thread_loop, &session->stream,
-                &session->core_listener, &session->core);
-            return -5;
-        }
-        int64_t elapsed_ns =
-            (int64_t)(now.tv_sec - start_time.tv_sec) * 1000000000LL +
-            (now.tv_nsec - start_time.tv_nsec);
-        if (elapsed_ns >=
-            (int64_t)STREAM_STATE_TIMEOUT_SEC * 1000000000LL) {
-            cleanup_failed_session_start(
-                session->thread_loop, &session->stream,
-                &session->core_listener, &session->core);
-            return -5;
-        }
-
-        // 状態変化のシグナルを取りこぼしても状態と経過時間を確認できるよう、
-        // 最大 1 秒待機する。戻り値は 0 = シグナル、正 = タイムアウト、負 = エラー
-        if (pw_thread_loop_timed_wait(session->thread_loop, 1) < 0) {
-            cleanup_failed_session_start(
-                session->thread_loop, &session->stream,
-                &session->core_listener, &session->core);
-            return -5;
-        }
+        goto fail;
     }
 
     atomic_store(&session->running, 1);
     pw_thread_loop_unlock(session->thread_loop);
 
-    return 0;
+    return AUDIO_PIPEWIRE_RESULT_OK;
+
+fail:
+    destroy_session_resources(session->thread_loop, &session->stream,
+                              &session->core_listener, &session->core);
+    return result;
 }
 
 int audio_pipewire_session_stop(struct AudioSession* session) {
@@ -695,35 +684,15 @@ int audio_pipewire_session_stop(struct AudioSession* session) {
         return -1;
     }
 
-    if (!atomic_load(&session->running)) {
+    if (!atomic_load(&session->running) && !session->stream && !session->core) {
         return 0;
     }
 
     atomic_store(&session->running, 0);
 
     pw_thread_loop_lock(session->thread_loop);
-
-    // thread loop の停止中に process invoke を処理させるため、stream を切断して
-    // からロックを解放する。stream の破棄は thread loop の停止後に行う
-    if (session->stream) {
-        pw_stream_disconnect(session->stream);
-    }
-
-    pw_thread_loop_unlock(session->thread_loop);
-
-    pw_thread_loop_stop(session->thread_loop);
-
-    if (session->stream) {
-        pw_stream_destroy(session->stream);
-        session->stream = NULL;
-    }
-
-    if (session->core) {
-        spa_hook_remove(&session->core_listener);
-        pw_core_disconnect(session->core);
-        session->core = NULL;
-    }
-
+    destroy_session_resources(session->thread_loop, &session->stream,
+                              &session->core_listener, &session->core);
     return 0;
 }
 
@@ -763,6 +732,8 @@ struct PlaybackSession {
     int sample_rate;
     int channels;
     atomic_int running;
+    // core の error イベントで受けたエラーコード
+    atomic_int core_error;
 };
 
 // 再生ストリームの process コールバック
@@ -857,28 +828,20 @@ static const struct pw_stream_events playback_stream_events = {
     .state_changed = playback_on_stream_state_changed,
 };
 
-// 再生用 core done イベント
-// ストリーム状態変化 (playback_on_stream_state_changed) でシグナルを送るため、ここでは不要
-static void playback_core_done(void* data, uint32_t id, int seq) {
-    (void)data;
-    (void)id;
-    (void)seq;
-}
-
 // 再生用 core error イベント
 static void playback_core_error(void* data, uint32_t id, int seq, int res,
                                  const char* message) {
     (void)id;
     (void)seq;
-    (void)res;
     (void)message;
     struct PlaybackSession* session = data;
+    // C API はエラーコードのみを返すため、メッセージは保持しない
+    atomic_store(&session->core_error, res);
     pw_thread_loop_signal(session->thread_loop, false);
 }
 
 static const struct pw_core_events playback_core_events = {
     PW_VERSION_CORE_EVENTS,
-    .done = playback_core_done,
     .error = playback_core_error,
 };
 
@@ -904,6 +867,7 @@ struct PlaybackSession* audio_pipewire_playback_session_create(const char* devic
     session->channels = channels;
     session->device_id = device_id ? strdup(device_id) : NULL;
     atomic_init(&session->running, 0);
+    atomic_init(&session->core_error, 0);
 
     // thread loop を作成する
     session->thread_loop = pw_thread_loop_new("shiguredo-audio-playback", NULL);
@@ -930,26 +894,11 @@ void audio_pipewire_playback_session_destroy(struct PlaybackSession* session) {
         return;
     }
 
-    if (atomic_load(&session->running)) {
-        audio_pipewire_playback_session_stop(session);
-    }
+    // 実行中でも破棄できるよう、停止してからリソースを破棄する
+    audio_pipewire_playback_session_stop(session);
 
-    if (session->stream) {
-        pw_stream_destroy(session->stream);
-    }
-
-    if (session->core) {
-        spa_hook_remove(&session->core_listener);
-        pw_core_disconnect(session->core);
-    }
-
-    if (session->context) {
-        pw_context_destroy(session->context);
-    }
-
-    if (session->thread_loop) {
-        pw_thread_loop_destroy(session->thread_loop);
-    }
+    pw_context_destroy(session->context);
+    pw_thread_loop_destroy(session->thread_loop);
 
     free(session->device_id);
     free(session);
@@ -959,11 +908,11 @@ int audio_pipewire_playback_session_start(struct PlaybackSession* session,
                                           AudioPlaybackCallback callback,
                                           void* user_data) {
     if (!session || !callback) {
-        return -1;
+        return AUDIO_PIPEWIRE_ERROR_INVALID_ARGUMENT;
     }
 
     if (atomic_load(&session->running)) {
-        return 0;
+        return AUDIO_PIPEWIRE_RESULT_OK;
     }
 
     session->callback = callback;
@@ -971,17 +920,21 @@ int audio_pipewire_playback_session_start(struct PlaybackSession* session,
 
     // thread loop を開始する
     if (pw_thread_loop_start(session->thread_loop) < 0) {
-        return -2;
+        return AUDIO_PIPEWIRE_ERROR_THREAD_LOOP_START;
     }
 
     pw_thread_loop_lock(session->thread_loop);
 
+    int result = AUDIO_PIPEWIRE_RESULT_OK;
+    struct pw_properties* props = NULL;
+
+    atomic_store(&session->core_error, 0);
+
     // PipeWire に接続する
     session->core = pw_context_connect(session->context, NULL, 0);
     if (!session->core) {
-        pw_thread_loop_unlock(session->thread_loop);
-        pw_thread_loop_stop(session->thread_loop);
-        return -3;
+        result = AUDIO_PIPEWIRE_ERROR_CONTEXT_CONNECT;
+        goto fail;
     }
 
     spa_zero(session->core_listener);
@@ -989,17 +942,12 @@ int audio_pipewire_playback_session_start(struct PlaybackSession* session,
                          &playback_core_events, session);
 
     // ストリームのプロパティを設定する
-    struct pw_properties* props =
-        pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio",
-                          PW_KEY_MEDIA_CATEGORY, "Playback",
-                          PW_KEY_MEDIA_ROLE, "Communication", NULL);
+    props = pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio",
+                              PW_KEY_MEDIA_CATEGORY, "Playback",
+                              PW_KEY_MEDIA_ROLE, "Communication", NULL);
     if (!props) {
-        spa_hook_remove(&session->core_listener);
-        pw_core_disconnect(session->core);
-        session->core = NULL;
-        pw_thread_loop_unlock(session->thread_loop);
-        pw_thread_loop_stop(session->thread_loop);
-        return -4;
+        result = AUDIO_PIPEWIRE_ERROR_PROPERTIES;
+        goto fail;
     }
 
     if (session->device_id) {
@@ -1012,12 +960,8 @@ int audio_pipewire_playback_session_start(struct PlaybackSession* session,
     session->stream =
         pw_stream_new(session->core, "audio-playback", props);
     if (!session->stream) {
-        spa_hook_remove(&session->core_listener);
-        pw_core_disconnect(session->core);
-        session->core = NULL;
-        pw_thread_loop_unlock(session->thread_loop);
-        pw_thread_loop_stop(session->thread_loop);
-        return -4;
+        result = AUDIO_PIPEWIRE_ERROR_STREAM_CREATE;
+        goto fail;
     }
 
     spa_zero(session->stream_listener);
@@ -1039,83 +983,28 @@ int audio_pipewire_playback_session_start(struct PlaybackSession* session,
                                            &audio_info);
 
     // 再生ストリームを接続する (PW_DIRECTION_OUTPUT)
-    int result = pw_stream_connect(
-        session->stream, PW_DIRECTION_OUTPUT, PW_ID_ANY,
-        PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS,
-        params, 1);
+    if (pw_stream_connect(session->stream, PW_DIRECTION_OUTPUT, PW_ID_ANY,
+                          PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS,
+                          params, 1) < 0) {
+        result = AUDIO_PIPEWIRE_ERROR_STREAM_CONNECT;
+        goto fail;
+    }
 
+    result = wait_for_stream_ready(session->thread_loop, session->stream,
+                                   &session->core_error);
     if (result < 0) {
-        cleanup_failed_session_start(session->thread_loop, &session->stream,
-                                     &session->core_listener, &session->core);
-        return -5;
-    }
-
-    // ストリーム状態が確定しないまま待機が続く場合に備え、
-    // ループ開始からの経過時間で上限を設ける
-    struct timespec start_time;
-    if (clock_gettime(CLOCK_MONOTONIC, &start_time) != 0) {
-        cleanup_failed_session_start(session->thread_loop, &session->stream,
-                                     &session->core_listener, &session->core);
-        return -5;
-    }
-
-    // ストリームが STREAMING または PAUSED になるまで待機する
-    while (1) {
-        enum pw_stream_state state = pw_stream_get_state(
-            session->stream, NULL);
-        if (state == PW_STREAM_STATE_STREAMING) {
-            break;
-        }
-        // PAUSED でもストリームは作成済みなので、activate して開始成功として扱う
-        if (state == PW_STREAM_STATE_PAUSED) {
-            if (pw_stream_set_active(session->stream, true) < 0) {
-                cleanup_failed_session_start(
-                    session->thread_loop, &session->stream,
-                    &session->core_listener, &session->core);
-                return -5;
-            }
-            break;
-        }
-        if (state == PW_STREAM_STATE_ERROR ||
-            state == PW_STREAM_STATE_UNCONNECTED) {
-            cleanup_failed_session_start(
-                session->thread_loop, &session->stream,
-                &session->core_listener, &session->core);
-            return -5;
-        }
-
-        struct timespec now;
-        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
-            cleanup_failed_session_start(
-                session->thread_loop, &session->stream,
-                &session->core_listener, &session->core);
-            return -5;
-        }
-        int64_t elapsed_ns =
-            (int64_t)(now.tv_sec - start_time.tv_sec) * 1000000000LL +
-            (now.tv_nsec - start_time.tv_nsec);
-        if (elapsed_ns >=
-            (int64_t)STREAM_STATE_TIMEOUT_SEC * 1000000000LL) {
-            cleanup_failed_session_start(
-                session->thread_loop, &session->stream,
-                &session->core_listener, &session->core);
-            return -5;
-        }
-
-        // 状態変化のシグナルを取りこぼしても状態と経過時間を確認できるよう、
-        // 最大 1 秒待機する。戻り値は 0 = シグナル、正 = タイムアウト、負 = エラー
-        if (pw_thread_loop_timed_wait(session->thread_loop, 1) < 0) {
-            cleanup_failed_session_start(
-                session->thread_loop, &session->stream,
-                &session->core_listener, &session->core);
-            return -5;
-        }
+        goto fail;
     }
 
     atomic_store(&session->running, 1);
     pw_thread_loop_unlock(session->thread_loop);
 
-    return 0;
+    return AUDIO_PIPEWIRE_RESULT_OK;
+
+fail:
+    destroy_session_resources(session->thread_loop, &session->stream,
+                              &session->core_listener, &session->core);
+    return result;
 }
 
 int audio_pipewire_playback_session_stop(struct PlaybackSession* session) {
@@ -1123,35 +1012,15 @@ int audio_pipewire_playback_session_stop(struct PlaybackSession* session) {
         return -1;
     }
 
-    if (!atomic_load(&session->running)) {
+    if (!atomic_load(&session->running) && !session->stream && !session->core) {
         return 0;
     }
 
     atomic_store(&session->running, 0);
 
     pw_thread_loop_lock(session->thread_loop);
-
-    // thread loop の停止中に process invoke を処理させるため、stream を切断して
-    // からロックを解放する。stream の破棄は thread loop の停止後に行う
-    if (session->stream) {
-        pw_stream_disconnect(session->stream);
-    }
-
-    pw_thread_loop_unlock(session->thread_loop);
-
-    pw_thread_loop_stop(session->thread_loop);
-
-    if (session->stream) {
-        pw_stream_destroy(session->stream);
-        session->stream = NULL;
-    }
-
-    if (session->core) {
-        spa_hook_remove(&session->core_listener);
-        pw_core_disconnect(session->core);
-        session->core = NULL;
-    }
-
+    destroy_session_resources(session->thread_loop, &session->stream,
+                              &session->core_listener, &session->core);
     return 0;
 }
 

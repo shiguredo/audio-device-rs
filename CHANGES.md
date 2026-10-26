@@ -72,6 +72,7 @@
   - @melpon
 - [FIX] PipeWire のキャプチャ・再生セッション開始で、ストリーム状態の待機がタイムアウトせずハングする問題を修正する
   - ストリームが STREAMING または PAUSED に遷移しないまま約 10 秒 (待機の粒度により最大約 11 秒) 経過した場合は、セッション開始に失敗する
+  - タイムアウトは CLOCK_MONOTONIC の経過時間で判定する。待機には CLOCK_REALTIME を使うため、システム時刻の後退やサスペンドがある環境ではこの上限は保証されない
   - @melpon
 - [FIX] PipeWire のキャプチャ・再生で、stop 後に start を再実行すると SIGSEGV する問題を修正する
   - stop では stream を切断して thread loop を停止してから stream を破棄し、core_listener を remove して core を切断する
@@ -89,6 +90,8 @@
   - @melpon
 - [ADD] `write_playback_frame_to_buffer` の直接テストを追加する
   - @voluntas
+- [UPDATE] PulseAudio のセッション開始はサーバが応答しない場合に無期限にブロックすることをドキュメントに記載する
+  - @melpon
 - [UPDATE] PBT をプロパティベーステストフレームワーク noprop に移行する
   - @voluntas
 - [UPDATE] shiguredo-rust 規約に準拠する
