@@ -18,6 +18,14 @@
 - [CHANGE] `Error::InvalidAudioFormat` を追加する
   - WASAPI で指定したサンプルレートやチャンネル数が音声形式として表現できない場合は `Error::SessionCreateFailed` ではなく `Error::InvalidAudioFormat` を返す
   - @melpon
+- [CHANGE] `AudioCapture::stop` と `AudioPlayback::stop` が `Result<()>` を返すように変更する
+  - 停止に失敗した場合は `Error::SessionStopFailed` を返す
+  - コールバックからの stop は停止処理を行わず `Error::SessionStopFailed` を返す
+  - `Error::SessionStopFailed` を追加する
+  - @melpon
+- [CHANGE] オーディオコールバックからの破棄を禁止する
+  - コールバック上で破棄した場合は panic する
+  - @melpon
 - [FIX] `Cargo.toml` の `windows` 依存を MSRV 1.93 の cargo が解釈できる形式に修正する
   - @voluntas
 - [FIX] examples が `--no-default-features` でビルドできない問題を修正する
@@ -75,6 +83,7 @@
 ### misc
 
 - [ADD] デフォルトバックエンドのセッション開始・停止・再開始がハング・クラッシュしないことを検証するテストを追加する
+  - process コールバックから stop を呼び出すテストを含む
   - @melpon
 - [ADD] 実機の入力デバイスと出力デバイスでキャプチャと再生のタイミングを検証するテストを追加する
   - @melpon

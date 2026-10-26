@@ -130,10 +130,16 @@ jobs:
         include:
           - name: Windows
             runner: [self-hosted, X64, N150, Windows]
+            cargo-flags: ""
           - name: Linux
             runner: [self-hosted, Linux, X64, NVIDIA-Video-Codec-SDK]
+            cargo-flags: ""
+          - name: Linux (PipeWire)
+            runner: [self-hosted, Linux, X64, NVIDIA-Video-Codec-SDK]
+            cargo-flags: "--no-default-features --features default-pipewire"
           - name: macOS
             runner: [self-hosted, macOS, ARM64, Apple-M1]
+            cargo-flags: ""
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
@@ -154,13 +160,13 @@ jobs:
       - name: Run cargo test (macOS)
         if: runner.os == 'macOS'
         # macOS の CI ではマイクへのアクセス許可がないため、キャプチャのテストを除外する
-        run: cargo test --workspace -- --skip capture_timestamps_track_audio_time
+        run: cargo test --workspace ${{ matrix.cargo-flags }} -- --skip capture_timestamps_track_audio_time
       - name: Run cargo test (non-macOS)
         if: runner.os != 'macOS'
-        run: cargo test --workspace
+        run: cargo test --workspace ${{ matrix.cargo-flags }}
       - name: Run device_list
         run: >
-          cargo run --example device_list | jq -e
+          cargo run ${{ matrix.cargo-flags }} --example device_list | jq -e
           '.device_count > 0
           and .device_count == (.devices | length)
           and (.devices | all(.name | length > 0))
@@ -168,7 +174,7 @@ jobs:
           and (.devices | all(.channels > 0 and .sample_rate > 0))'
       - name: Run device_info
         run: >
-          cargo run --example device_info | jq -e
+          cargo run ${{ matrix.cargo-flags }} --example device_info | jq -e
           '.statistics.device_count > 0
           and .statistics.device_count == (.devices | length)
           and .statistics.input_count + .statistics.output_count == .statistics.device_count

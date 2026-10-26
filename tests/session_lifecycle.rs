@@ -3,6 +3,7 @@
 //! 入出力デバイスが 0 件の場合は検証をスキップする。
 //! デバイスの列挙に失敗した場合はテストを失敗させる。
 //! PipeWire などサーバを必要とするバックエンドでは、サーバが動作している必要がある。
+//! サーバが停止している場合、デバイス列挙に失敗してテストは失敗する。
 //! macOS のキャプチャはマイクへのアクセス許可が必要なため検証しない。
 
 #![cfg(any(
@@ -13,6 +14,7 @@
 ))]
 
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use shiguredo_audio_device::{
@@ -21,7 +23,7 @@ use shiguredo_audio_device::{
 };
 
 /// セッション開始の完了を待つ上限時間。
-const START_TIMEOUT: Duration = Duration::from_secs(20);
+const START_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// 1 つのテストで start / stop を繰り返す回数。
 const LIFECYCLE_CYCLES: usize = 10;
@@ -31,7 +33,9 @@ const LIFECYCLE_CYCLES: usize = 10;
 /// 列挙に失敗した場合は panic する。
 fn input_device_count() -> usize {
     AudioDeviceList::enumerate_input()
-        .unwrap_or_else(|error| panic!("入力デバイスの列挙に失敗しました: {error}"))
+        .unwrap_or_else(|error| {
+            panic!("入力デバイスの列挙に失敗しました (オーディオサーバが動作しているか確認してください): {error}")
+        })
         .len()
 }
 
@@ -40,7 +44,9 @@ fn input_device_count() -> usize {
 /// 列挙に失敗した場合は panic する。
 fn output_device_count() -> usize {
     AudioDeviceList::enumerate_output()
-        .unwrap_or_else(|error| panic!("出力デバイスの列挙に失敗しました: {error}"))
+        .unwrap_or_else(|error| {
+            panic!("出力デバイスの列挙に失敗しました (オーディオサーバが動作しているか確認してください): {error}")
+        })
         .len()
 }
 
@@ -127,7 +133,7 @@ fn capture_start_and_restart_after_stop() {
         for _ in 0..LIFECYCLE_CYCLES {
             capture.start()?;
             wait_for_process(&receiver);
-            capture.stop();
+            capture.stop()?;
         }
         Ok(())
     });
@@ -152,8 +158,119 @@ fn playback_start_and_restart_after_stop() {
         for _ in 0..LIFECYCLE_CYCLES {
             playback.start()?;
             wait_for_process(&receiver);
-            playback.stop();
+            playback.stop()?;
         }
+        Ok(())
+    });
+}
+
+/// process コールバックから stop を呼び出しても SIGSEGV しないこと。
+///
+/// コールバックからの stop は停止処理を行わず Error::SessionStopFailed を返す。
+/// メインスレッド側の stop は成功することを確認する。
+#[test]
+fn capture_stop_from_process_callback_does_not_crash() {
+    let _guard = initialize_thread().expect("テストスレッドを初期化できること");
+
+    if skip_capture() {
+        return;
+    }
+
+    run_start_with_watchdog("キャプチャのコールバック停止", || {
+        let shared: Arc<Mutex<Option<AudioCapture>>> = Arc::new(Mutex::new(None));
+        let weak = Arc::downgrade(&shared);
+        let (sender, receiver) = mpsc::channel::<Result<(), Error>>();
+
+        let capture = AudioCapture::new(AudioCaptureConfig::default(), move |_| {
+            if let Some(shared) = weak.upgrade()
+                && let Ok(mut guard) = shared.try_lock()
+                && let Some(capture) = guard.as_mut()
+            {
+                let stop_result = capture.stop();
+                let _ = sender.send(stop_result);
+            }
+        })?;
+
+        *shared.lock().expect("共有状態のロックを取得できること") = Some(capture);
+
+        shared
+            .lock()
+            .expect("共有状態のロックを取得できること")
+            .as_mut()
+            .expect("キャプチャが設定されていること")
+            .start()?;
+
+        let stop_result = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("process コールバックから stop が呼ばれること");
+        assert!(
+            matches!(stop_result, Err(Error::SessionStopFailed)),
+            "コールバックからの stop は Error::SessionStopFailed になること: {stop_result:?}"
+        );
+
+        shared
+            .lock()
+            .expect("共有状態のロックを取得できること")
+            .as_mut()
+            .expect("キャプチャが設定されていること")
+            .stop()?;
+
+        Ok(())
+    });
+}
+
+/// process コールバックから stop を呼び出しても SIGSEGV しないこと。
+///
+/// コールバックからの stop は停止処理を行わず Error::SessionStopFailed を返す。
+/// メインスレッド側の stop は成功することを確認する。
+#[test]
+fn playback_stop_from_process_callback_does_not_crash() {
+    let _guard = initialize_thread().expect("テストスレッドを初期化できること");
+
+    if skip_playback() {
+        return;
+    }
+
+    run_start_with_watchdog("再生のコールバック停止", || {
+        let shared: Arc<Mutex<Option<AudioPlayback>>> = Arc::new(Mutex::new(None));
+        let weak = Arc::downgrade(&shared);
+        let (sender, receiver) = mpsc::channel::<Result<(), Error>>();
+
+        let playback = AudioPlayback::new(AudioPlaybackConfig::default(), move |_, _, _| {
+            if let Some(shared) = weak.upgrade()
+                && let Ok(mut guard) = shared.try_lock()
+                && let Some(playback) = guard.as_mut()
+            {
+                let stop_result = playback.stop();
+                let _ = sender.send(stop_result);
+            }
+            None
+        })?;
+
+        *shared.lock().expect("共有状態のロックを取得できること") = Some(playback);
+
+        shared
+            .lock()
+            .expect("共有状態のロックを取得できること")
+            .as_mut()
+            .expect("再生が設定されていること")
+            .start()?;
+
+        let stop_result = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("process コールバックから stop が呼ばれること");
+        assert!(
+            matches!(stop_result, Err(Error::SessionStopFailed)),
+            "コールバックからの stop は Error::SessionStopFailed になること: {stop_result:?}"
+        );
+
+        shared
+            .lock()
+            .expect("共有状態のロックを取得できること")
+            .as_mut()
+            .expect("再生が設定されていること")
+            .stop()?;
+
         Ok(())
     });
 }

@@ -664,13 +664,25 @@ fail:
     return result;
 }
 
-void audio_pulse_session_stop(struct AudioSession* session) {
-    if (!session || !atomic_load(&session->running)) {
-        return;
+int audio_pulse_session_stop(struct AudioSession* session) {
+    if (!session) {
+        return -1;
+    }
+
+    if (!atomic_load(&session->running)) {
+        return 0;
     }
 
     atomic_store(&session->running, 0);
     destroy_capture_resources(session);
+    return 0;
+}
+
+int audio_pulse_session_is_in_callback(struct AudioSession* session) {
+    if (!session || !session->mainloop) {
+        return 0;
+    }
+    return pa_threaded_mainloop_in_thread(session->mainloop) ? 1 : 0;
 }
 
 int audio_pulse_session_sample_rate(struct AudioSession* session) {
@@ -952,13 +964,25 @@ fail:
     return result;
 }
 
-void audio_pulse_playback_session_stop(struct PlaybackSession* session) {
-    if (!session || !atomic_load(&session->running)) {
-        return;
+int audio_pulse_playback_session_stop(struct PlaybackSession* session) {
+    if (!session) {
+        return -1;
+    }
+
+    if (!atomic_load(&session->running)) {
+        return 0;
     }
 
     atomic_store(&session->running, 0);
     destroy_playback_resources(session);
+    return 0;
+}
+
+int audio_pulse_playback_session_is_in_callback(struct PlaybackSession* session) {
+    if (!session || !session->mainloop) {
+        return 0;
+    }
+    return pa_threaded_mainloop_in_thread(session->mainloop) ? 1 : 0;
 }
 
 int audio_pulse_playback_session_sample_rate(struct PlaybackSession* session) {

@@ -115,6 +115,14 @@ Windows では COM を MTA モードで初期化します。macOS / Linux では
 let _guard = shiguredo_audio_device::initialize_thread()?;
 ```
 
+### コールバックからの start / stop
+
+キャプチャ・再生のコールバックから `start()` / `stop()` を呼び出してはいけません。
+コールバックからの `stop()` は停止処理を行わず `Error::SessionStopFailed` を返します。
+`stop()` は別のスレッドから呼び出してください。
+コールバックからオブジェクトを破棄しないでください。
+破棄した場合は panic します。
+
 ### デバイス列挙
 
 ```rust
@@ -182,7 +190,7 @@ capture.start()?;
 // ... キャプチャ中 ...
 
 // キャプチャ停止
-capture.stop();
+capture.stop()?;
 ```
 
 Windows では `sample_rate` と `channels` で指定した S16 のストリームを開き、共有モードの形式変換でデバイスの形式から変換します。
@@ -215,7 +223,7 @@ playback.start()?;
 
 // ... 再生中 ...
 
-playback.stop();
+playback.stop()?;
 ```
 
 ## サンプル

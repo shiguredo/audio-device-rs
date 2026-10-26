@@ -28,8 +28,9 @@ struct PlaybackOps {
         callback: ffi::AudioPlaybackCallback,
         context: *mut c_void,
     ) -> i32,
-    session_stop: unsafe extern "C" fn(session: *mut ffi::PlaybackSession),
+    session_stop: unsafe extern "C" fn(session: *mut ffi::PlaybackSession) -> i32,
     session_destroy: unsafe extern "C" fn(session: *mut ffi::PlaybackSession),
+    session_is_in_callback: unsafe extern "C" fn(session: *mut ffi::PlaybackSession) -> i32,
     session_sample_rate: unsafe extern "C" fn(session: *mut ffi::PlaybackSession) -> i32,
     session_channels: unsafe extern "C" fn(session: *mut ffi::PlaybackSession) -> i32,
 }
@@ -151,13 +152,26 @@ impl FfiPlaybackImpl {
         Ok(())
     }
 
-    pub fn stop(&mut self) {
-        if self.running {
-            if let Some(session) = self.session {
-                unsafe { (self.ops.session_stop)(session.as_ptr()) };
-            }
-            self.running = false;
+    pub fn stop(&mut self) -> Result<()> {
+        if !self.running {
+            return Ok(());
         }
+
+        if let Some(session) = self.session {
+            // コールバック上からは stream を破棄できないため、再入 stop は拒否する
+            let in_callback = unsafe { (self.ops.session_is_in_callback)(session.as_ptr()) };
+            if in_callback != 0 {
+                return Err(Error::SessionStopFailed);
+            }
+
+            let ret = unsafe { (self.ops.session_stop)(session.as_ptr()) };
+            if ret < 0 {
+                return Err(Error::SessionStopFailed);
+            }
+        }
+
+        self.running = false;
+        Ok(())
     }
 
     pub fn config(&self) -> &AudioPlaybackConfig {
@@ -175,7 +189,14 @@ impl FfiPlaybackImpl {
 
 impl Drop for FfiPlaybackImpl {
     fn drop(&mut self) {
-        self.stop();
+        if let Some(session) = self.session {
+            let in_callback = unsafe { (self.ops.session_is_in_callback)(session.as_ptr()) };
+            if in_callback != 0 {
+                panic!("AudioPlayback must not be dropped from its callback");
+            }
+        }
+
+        let _ = self.stop();
         if let Some(session) = self.session.take() {
             unsafe { (self.ops.session_destroy)(session.as_ptr()) };
         }
@@ -246,6 +267,7 @@ const OPS_COREAUDIO: PlaybackOps = PlaybackOps {
     session_start: ffi::audio_coreaudio_playback_session_start,
     session_stop: ffi::audio_coreaudio_playback_session_stop,
     session_destroy: ffi::audio_coreaudio_playback_session_destroy,
+    session_is_in_callback: ffi::audio_coreaudio_playback_session_is_in_callback,
     session_sample_rate: ffi::audio_coreaudio_playback_session_sample_rate,
     session_channels: ffi::audio_coreaudio_playback_session_channels,
 };
@@ -256,6 +278,7 @@ const OPS_PULSE: PlaybackOps = PlaybackOps {
     session_start: ffi::audio_pulse_playback_session_start,
     session_stop: ffi::audio_pulse_playback_session_stop,
     session_destroy: ffi::audio_pulse_playback_session_destroy,
+    session_is_in_callback: ffi::audio_pulse_playback_session_is_in_callback,
     session_sample_rate: ffi::audio_pulse_playback_session_sample_rate,
     session_channels: ffi::audio_pulse_playback_session_channels,
 };
@@ -266,6 +289,7 @@ const OPS_PIPEWIRE: PlaybackOps = PlaybackOps {
     session_start: ffi::audio_pipewire_playback_session_start,
     session_stop: ffi::audio_pipewire_playback_session_stop,
     session_destroy: ffi::audio_pipewire_playback_session_destroy,
+    session_is_in_callback: ffi::audio_pipewire_playback_session_is_in_callback,
     session_sample_rate: ffi::audio_pipewire_playback_session_sample_rate,
     session_channels: ffi::audio_pipewire_playback_session_channels,
 };

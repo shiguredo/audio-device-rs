@@ -690,9 +690,13 @@ int audio_pipewire_session_start(struct AudioSession* session,
     return 0;
 }
 
-void audio_pipewire_session_stop(struct AudioSession* session) {
-    if (!session || !atomic_load(&session->running)) {
-        return;
+int audio_pipewire_session_stop(struct AudioSession* session) {
+    if (!session) {
+        return -1;
+    }
+
+    if (!atomic_load(&session->running)) {
+        return 0;
     }
 
     atomic_store(&session->running, 0);
@@ -719,6 +723,15 @@ void audio_pipewire_session_stop(struct AudioSession* session) {
         pw_core_disconnect(session->core);
         session->core = NULL;
     }
+
+    return 0;
+}
+
+int audio_pipewire_session_is_in_callback(struct AudioSession* session) {
+    if (!session) {
+        return 0;
+    }
+    return pw_thread_loop_in_thread(session->thread_loop) ? 1 : 0;
 }
 
 int audio_pipewire_session_sample_rate(struct AudioSession* session) {
@@ -1105,9 +1118,13 @@ int audio_pipewire_playback_session_start(struct PlaybackSession* session,
     return 0;
 }
 
-void audio_pipewire_playback_session_stop(struct PlaybackSession* session) {
-    if (!session || !atomic_load(&session->running)) {
-        return;
+int audio_pipewire_playback_session_stop(struct PlaybackSession* session) {
+    if (!session) {
+        return -1;
+    }
+
+    if (!atomic_load(&session->running)) {
+        return 0;
     }
 
     atomic_store(&session->running, 0);
@@ -1134,6 +1151,15 @@ void audio_pipewire_playback_session_stop(struct PlaybackSession* session) {
         pw_core_disconnect(session->core);
         session->core = NULL;
     }
+
+    return 0;
+}
+
+int audio_pipewire_playback_session_is_in_callback(struct PlaybackSession* session) {
+    if (!session) {
+        return 0;
+    }
+    return pw_thread_loop_in_thread(session->thread_loop) ? 1 : 0;
 }
 
 int audio_pipewire_playback_session_sample_rate(struct PlaybackSession* session) {

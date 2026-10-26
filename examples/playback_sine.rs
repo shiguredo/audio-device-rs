@@ -63,7 +63,7 @@ fn main() {
     let mut buf = String::new();
     let _ = std::io::stdin().read_line(&mut buf);
 
-    playback.stop();
+    playback.stop().expect("failed to stop playback");
     eprintln!("Playback stopped");
 }
 
