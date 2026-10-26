@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-20
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-27
 - Model: Qwen 3
 - Branch: feature/fix-pulse-session-start-context-leak
 - Polished: 2026-07-21
@@ -55,7 +55,9 @@ if (!session->stream) {
 
 ## 解決方法
 
-キャプチャ側（519-523, 531-538, 541-548 行目）と再生側（802-806, 815-822, 825-832 行目）の各エラーパスで、`pa_threaded_mainloop_unlock` の前に `pa_context_disconnect(session->context);` を追加する。
+- `audio_pulse_session_start` / `audio_pulse_playback_session_start` の mainloop・context 作成と接続を `start_context` に共通化した。
+- start 失敗時は `destroy_resources` で mainloop / context / stream を破棄する。context が READY なら `pa_context_disconnect` してから `pa_context_unref` する。
+- `destroy` は stop 後に残ったリソースも `destroy_resources` で破棄する。
 
 ## 後方互換
 
