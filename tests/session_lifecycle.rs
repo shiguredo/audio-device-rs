@@ -1,5 +1,6 @@
 //! デフォルトバックエンドのセッション開始・停止・再開始を検証する。
 //!
+//! 実行中に別スレッドから停止するケースと、ガードの Drop で停止するケースも検証する。
 //! 入出力デバイスが 0 件の場合は検証をスキップする。
 //! デバイスの列挙に失敗した場合はテストを失敗させる。
 //! PipeWire などサーバを必要とするバックエンドでは、サーバが動作している必要がある。
@@ -14,7 +15,6 @@
 ))]
 
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use shiguredo_audio_device::{
@@ -22,11 +22,14 @@ use shiguredo_audio_device::{
     initialize_thread,
 };
 
-/// セッション開始の完了を待つ上限時間。
-const START_TIMEOUT: Duration = Duration::from_secs(60);
+/// シナリオ全体の完了を待つ上限時間。
+const SCENARIO_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// 1 つのテストで start / stop を繰り返す回数。
 const LIFECYCLE_CYCLES: usize = 10;
+
+/// 停止後に新しい process コールバックが届かないことを確認する時間。
+const STOP_OBSERVE_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// デフォルトバックエンドの入力デバイス数を返す。
 ///
@@ -85,32 +88,80 @@ fn wait_for_process(receiver: &mpsc::Receiver<()>) {
     let _ = receiver.recv_timeout(Duration::from_secs(1));
 }
 
-/// ワーカースレッドでセッションを開始し、指定時間内に開始が戻ることを検証する。
+/// 停止後に新しい process コールバックが届かないことを確認する。
 ///
-/// 開始が指定時間内に戻らない場合は panic する。
-fn run_start_with_watchdog<F>(label: &str, start: F)
+/// 停止処理中に送信済みの通知は捨て、その後一定時間新しい通知が届かないことを
+/// 確認する。停止が実際に効いていなければ、この待機中に通知が届く。
+fn assert_no_process_after_stop(receiver: &mpsc::Receiver<()>) {
+    // 停止処理中に送信された分を捨てる
+    while receiver.try_recv().is_ok() {}
+    std::thread::sleep(STOP_OBSERVE_TIMEOUT);
+    assert!(
+        receiver.try_recv().is_err(),
+        "停止後も process コールバックが届いています"
+    );
+}
+
+/// コールバックをブロックしたまま、別スレッドから stop を呼ぶ。
+///
+/// stop がコールバックの完了を待つことを確認する。
+fn stop_while_callback_blocked<'a, S, F>(release: mpsc::Receiver<()>, session: S, stop: F)
+where
+    S: Send + 'a,
+    F: FnOnce(S) + Send + 'a,
+{
+    let (stop_started_sender, stop_started_receiver) = mpsc::channel();
+    std::thread::scope(move |scope| {
+        // アサーションが失敗しても release の drop でコールバックを解放する
+        let handle = scope.spawn(move || {
+            let _guard = initialize_thread().expect("停止スレッドを初期化できること");
+            let _ = stop_started_sender.send(());
+            stop(session);
+        });
+
+        stop_started_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("停止スレッドが停止処理を開始すること");
+        // コールバックを止めている間は stop が戻らないことを確認する
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !handle.is_finished(),
+            "コールバック実行中の stop が先に戻っています"
+        );
+
+        // コールバックの release.send を完了させる
+        release
+            .recv_timeout(Duration::from_secs(5))
+            .expect("コールバックを解放できること");
+    });
+}
+
+/// ワーカースレッドでセッションのシナリオを実行し、指定時間内に戻ることを検証する。
+///
+/// シナリオが指定時間内に戻らない場合は panic する。
+fn run_with_watchdog<F>(label: &str, scenario: F)
 where
     F: FnOnce() -> Result<(), Error> + Send + 'static,
 {
     let (sender, receiver) = mpsc::channel();
-    // 開始処理がハングしてもテストプロセス全体が停止しないよう、
+    // シナリオがハングしてもテストプロセス全体が停止しないよう、
     // ワーカースレッドで実行してタイムアウトで監視する
     std::thread::spawn(move || {
         let _guard = initialize_thread().expect("ワーカースレッドを初期化できること");
-        let _ = sender.send(start());
+        let _ = sender.send(scenario());
     });
 
-    match receiver.recv_timeout(START_TIMEOUT) {
+    match receiver.recv_timeout(SCENARIO_TIMEOUT) {
         Ok(Ok(())) => {}
-        Ok(Err(error)) => panic!("{label}の開始に失敗しました: {error}"),
+        Ok(Err(error)) => panic!("{label}に失敗しました: {error}"),
         Err(mpsc::RecvTimeoutError::Timeout) => {
             panic!(
-                "{} 秒以内に{label}の開始が戻りませんでした",
-                START_TIMEOUT.as_secs()
+                "{} 秒以内に{label}が戻りませんでした",
+                SCENARIO_TIMEOUT.as_secs()
             )
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
-            panic!("{label}の開始を実行したワーカースレッドが終了しました")
+            panic!("{label}を実行したワーカースレッドが終了しました")
         }
     }
 }
@@ -124,17 +175,25 @@ fn capture_start_and_restart_after_stop() {
         return;
     }
 
-    run_start_with_watchdog("キャプチャ", || {
+    run_with_watchdog("キャプチャ", || {
         let (sender, receiver) = mpsc::channel();
         let mut capture = AudioCapture::new(AudioCaptureConfig::default(), move |_| {
             let _ = sender.send(());
         })?;
 
-        for _ in 0..LIFECYCLE_CYCLES {
-            capture.start()?;
+        for cycle in 0..LIFECYCLE_CYCLES {
+            let session = capture.start()?;
             wait_for_process(&receiver);
-            capture.stop()?;
+            if cycle % 2 == 0 {
+                session.stop();
+            } else {
+                // ガードの Drop でも停止する
+                drop(session);
+            }
         }
+        // 最後のサイクルはガードの Drop で停止しているため、
+        // 停止後にコールバックが届かないことを確認する
+        assert_no_process_after_stop(&receiver);
         Ok(())
     });
 }
@@ -148,128 +207,90 @@ fn playback_start_and_restart_after_stop() {
         return;
     }
 
-    run_start_with_watchdog("再生", || {
+    run_with_watchdog("再生", || {
         let (sender, receiver) = mpsc::channel();
         let mut playback = AudioPlayback::new(AudioPlaybackConfig::default(), move |_, _, _| {
             let _ = sender.send(());
             None
         })?;
 
-        for _ in 0..LIFECYCLE_CYCLES {
-            playback.start()?;
+        for cycle in 0..LIFECYCLE_CYCLES {
+            let session = playback.start()?;
             wait_for_process(&receiver);
-            playback.stop()?;
+            if cycle % 2 == 0 {
+                session.stop();
+            } else {
+                // ガードの Drop でも停止する
+                drop(session);
+            }
         }
+        // 最後のサイクルはガードの Drop で停止しているため、
+        // 停止後にコールバックが届かないことを確認する
+        assert_no_process_after_stop(&receiver);
         Ok(())
     });
 }
 
-/// process コールバックから stop を呼び出しても SIGSEGV しないこと。
+/// コールバック実行中に、別スレッドからガード経由で停止できること。
 ///
-/// コールバックからの stop は停止処理を行わず Error::SessionStopFailed を返す。
-/// メインスレッド側の stop は成功することを確認する。
+/// コールバックをブロックしたまま停止スレッドから stop を呼び、stop が
+/// コールバックの終了を待つことを確認する。
 #[test]
-fn capture_stop_from_process_callback_does_not_crash() {
+fn capture_stop_from_other_thread() {
     let _guard = initialize_thread().expect("テストスレッドを初期化できること");
 
     if skip_capture() {
         return;
     }
 
-    run_start_with_watchdog("キャプチャのコールバック停止", || {
-        let shared: Arc<Mutex<Option<AudioCapture>>> = Arc::new(Mutex::new(None));
-        let weak = Arc::downgrade(&shared);
-        let (sender, receiver) = mpsc::channel::<Result<(), Error>>();
-
-        let capture = AudioCapture::new(AudioCaptureConfig::default(), move |_| {
-            if let Some(shared) = weak.upgrade()
-                && let Ok(mut guard) = shared.try_lock()
-                && let Some(capture) = guard.as_mut()
-            {
-                let stop_result = capture.stop();
-                let _ = sender.send(stop_result);
-            }
+    run_with_watchdog("キャプチャの別スレッド停止", || {
+        let (sender, receiver) = mpsc::sync_channel(0);
+        let mut capture = AudioCapture::new(AudioCaptureConfig::default(), move |_| {
+            // 1 回目で開始を通知し、2 回目でテスト側の確認が終わるまで待つ
+            let _ = sender.send(());
+            let _ = sender.send(());
         })?;
 
-        *shared.lock().expect("共有状態のロックを取得できること") = Some(capture);
-
-        shared
-            .lock()
-            .expect("共有状態のロックを取得できること")
-            .as_mut()
-            .expect("キャプチャが設定されていること")
-            .start()?;
-
-        let stop_result = receiver
+        let session = capture.start()?;
+        receiver
             .recv_timeout(Duration::from_secs(5))
-            .expect("process コールバックから stop が呼ばれること");
-        assert!(
-            matches!(stop_result, Err(Error::SessionStopFailed)),
-            "コールバックからの stop は Error::SessionStopFailed になること: {stop_result:?}"
-        );
+            .expect("process コールバックが届くこと");
 
-        shared
-            .lock()
-            .expect("共有状態のロックを取得できること")
-            .as_mut()
-            .expect("キャプチャが設定されていること")
-            .stop()?;
+        // ガードを停止用のスレッドへ move し、そのスレッドから停止する
+        stop_while_callback_blocked(receiver, session, |session| session.stop());
 
         Ok(())
     });
 }
 
-/// process コールバックから stop を呼び出しても SIGSEGV しないこと。
+/// コールバック実行中に、別スレッドからガード経由で停止できること。
 ///
-/// コールバックからの stop は停止処理を行わず Error::SessionStopFailed を返す。
-/// メインスレッド側の stop は成功することを確認する。
+/// コールバックをブロックしたまま停止スレッドから stop を呼び、stop が
+/// コールバックの終了を待つことを確認する。
 #[test]
-fn playback_stop_from_process_callback_does_not_crash() {
+fn playback_stop_from_other_thread() {
     let _guard = initialize_thread().expect("テストスレッドを初期化できること");
 
     if skip_playback() {
         return;
     }
 
-    run_start_with_watchdog("再生のコールバック停止", || {
-        let shared: Arc<Mutex<Option<AudioPlayback>>> = Arc::new(Mutex::new(None));
-        let weak = Arc::downgrade(&shared);
-        let (sender, receiver) = mpsc::channel::<Result<(), Error>>();
-
-        let playback = AudioPlayback::new(AudioPlaybackConfig::default(), move |_, _, _| {
-            if let Some(shared) = weak.upgrade()
-                && let Ok(mut guard) = shared.try_lock()
-                && let Some(playback) = guard.as_mut()
-            {
-                let stop_result = playback.stop();
-                let _ = sender.send(stop_result);
-            }
+    run_with_watchdog("再生の別スレッド停止", || {
+        let (sender, receiver) = mpsc::sync_channel(0);
+        let mut playback = AudioPlayback::new(AudioPlaybackConfig::default(), move |_, _, _| {
+            // 1 回目で開始を通知し、2 回目でテスト側の確認が終わるまで待つ
+            let _ = sender.send(());
+            let _ = sender.send(());
             None
         })?;
 
-        *shared.lock().expect("共有状態のロックを取得できること") = Some(playback);
-
-        shared
-            .lock()
-            .expect("共有状態のロックを取得できること")
-            .as_mut()
-            .expect("再生が設定されていること")
-            .start()?;
-
-        let stop_result = receiver
+        let session = playback.start()?;
+        receiver
             .recv_timeout(Duration::from_secs(5))
-            .expect("process コールバックから stop が呼ばれること");
-        assert!(
-            matches!(stop_result, Err(Error::SessionStopFailed)),
-            "コールバックからの stop は Error::SessionStopFailed になること: {stop_result:?}"
-        );
+            .expect("process コールバックが届くこと");
 
-        shared
-            .lock()
-            .expect("共有状態のロックを取得できること")
-            .as_mut()
-            .expect("再生が設定されていること")
-            .stop()?;
+        // ガードを停止用のスレッドへ move し、そのスレッドから stop を呼ぶ
+        stop_while_callback_blocked(receiver, session, |session| session.stop());
 
         Ok(())
     });

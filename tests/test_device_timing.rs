@@ -109,13 +109,11 @@ fn capture_timestamps_track_audio_time() {
     })
     .unwrap_or_else(|error| panic!("デフォルト入力デバイスのキャプチャを作成できません: {error}"));
 
-    capture.start().unwrap_or_else(|error| {
+    let session = capture.start().unwrap_or_else(|error| {
         panic!("デフォルト入力デバイスのキャプチャを開始できません: {error}")
     });
     std::thread::sleep(CAPTURE_DURATION);
-    capture.stop().unwrap_or_else(|error| {
-        panic!("デフォルト入力デバイスのキャプチャを停止できません: {error}")
-    });
+    session.stop();
     // キャプチャ停止後に受信を打ち切る
     drop(capture);
 
@@ -159,13 +157,11 @@ fn playback_callbacks_track_audio_time() {
     )
     .unwrap_or_else(|error| panic!("デフォルト出力デバイスの再生を作成できません: {error}"));
 
-    playback
+    let session = playback
         .start()
         .unwrap_or_else(|error| panic!("デフォルト出力デバイスの再生を開始できません: {error}"));
     std::thread::sleep(PLAYBACK_DURATION);
-    playback
-        .stop()
-        .unwrap_or_else(|error| panic!("デフォルト出力デバイスの再生を停止できません: {error}"));
+    session.stop();
     // 再生停止後に受信を打ち切る
     drop(playback);
 

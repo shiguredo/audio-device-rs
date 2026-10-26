@@ -50,20 +50,19 @@ fn main() {
     )
     .expect("failed to create playback session");
 
+    let session = playback.start().expect("failed to start playback");
     eprintln!(
         "Playback started: {}Hz sine wave (sample rate: {}Hz, channels: {})",
         FREQUENCY,
-        playback.sample_rate(),
-        playback.channels()
+        session.sample_rate(),
+        session.channels()
     );
     eprintln!("Press Enter to stop");
-
-    playback.start().expect("failed to start playback");
 
     let mut buf = String::new();
     let _ = std::io::stdin().read_line(&mut buf);
 
-    playback.stop().expect("failed to stop playback");
+    session.stop();
     eprintln!("Playback stopped");
 }
 

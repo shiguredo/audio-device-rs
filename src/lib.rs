@@ -37,11 +37,11 @@ pub use common::{
 };
 
 #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire, enable_wasapi))]
-pub use capture::AudioCapture;
+pub use capture::{AudioCapture, AudioCaptureSession};
 #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire, enable_wasapi))]
 pub use device::{AudioDevice, AudioDeviceList};
 #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire, enable_wasapi))]
-pub use playback::AudioPlayback;
+pub use playback::{AudioPlayback, AudioPlaybackSession};
 
 pub use error::{Error, Result};
 

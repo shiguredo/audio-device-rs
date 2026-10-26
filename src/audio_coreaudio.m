@@ -23,8 +23,6 @@ struct AudioSession {
     AudioFrameCallback callback;
     void* user_data;
     atomic_int running;
-    // ユーザーコールバックの実行中か
-    atomic_int in_callback;
 };
 
 static void audio_input_callback(void* user_data,
@@ -53,12 +51,10 @@ static void audio_input_callback(void* user_data,
         int format = (session->format.mBitsPerChannel == 16) ? AUDIO_FORMAT_S16
                                                               : AUDIO_FORMAT_F32;
 
-        atomic_store(&session->in_callback, 1);
         session->callback(session->user_data, buffer->mAudioData, num_packets,
                           session->format.mChannelsPerFrame,
                           (int)session->format.mSampleRate, format,
                           timestamp_us);
-        atomic_store(&session->in_callback, 0);
     }
 
     // バッファを再エンキュー
@@ -454,7 +450,6 @@ struct AudioSession* audio_coreaudio_session_create(const char* device_id,
     }
 
     atomic_init(&session->running, 0);
-    atomic_init(&session->in_callback, 0);
 
     // デフォルト値の設定
     if (sample_rate <= 0) {
@@ -593,13 +588,6 @@ int audio_coreaudio_session_stop(struct AudioSession* session) {
     return 0;
 }
 
-int audio_coreaudio_session_is_in_callback(struct AudioSession* session) {
-    if (!session) {
-        return 0;
-    }
-    return atomic_load(&session->in_callback);
-}
-
 int audio_coreaudio_session_sample_rate(struct AudioSession* session) {
     if (!session) {
         return 0;
@@ -623,8 +611,6 @@ struct PlaybackSession {
     AudioPlaybackCallback callback;
     void* user_data;
     atomic_int running;
-    // ユーザーコールバックの実行中か
-    atomic_int in_callback;
 };
 
 static void audio_output_callback(void* user_data,
@@ -643,14 +629,12 @@ static void audio_output_callback(void* user_data,
     int format = (session->format.mBitsPerChannel == 16) ? AUDIO_FORMAT_S16
                                                           : AUDIO_FORMAT_F32;
 
-    atomic_store(&session->in_callback, 1);
     int written = session->callback(session->user_data,
                                      buffer->mAudioData,
                                      frames,
                                      session->format.mChannelsPerFrame,
                                      (int)session->format.mSampleRate,
                                      format);
-    atomic_store(&session->in_callback, 0);
 
     if (written > frames) {
         written = frames;
@@ -675,7 +659,6 @@ struct PlaybackSession* audio_coreaudio_playback_session_create(const char* devi
     }
 
     atomic_init(&session->running, 0);
-    atomic_init(&session->in_callback, 0);
 
     // デフォルト値の設定
     if (sample_rate <= 0) {
@@ -815,13 +798,6 @@ int audio_coreaudio_playback_session_stop(struct PlaybackSession* session) {
     atomic_store(&session->running, 0);
     AudioQueueStop(session->queue, true);
     return 0;
-}
-
-int audio_coreaudio_playback_session_is_in_callback(struct PlaybackSession* session) {
-    if (!session) {
-        return 0;
-    }
-    return atomic_load(&session->in_callback);
 }
 
 int audio_coreaudio_playback_session_sample_rate(struct PlaybackSession* session) {

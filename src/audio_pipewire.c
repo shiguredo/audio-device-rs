@@ -703,13 +703,6 @@ int audio_pipewire_session_stop(struct AudioSession* session) {
     return 0;
 }
 
-int audio_pipewire_session_is_in_callback(struct AudioSession* session) {
-    if (!session) {
-        return 0;
-    }
-    return pw_thread_loop_in_thread(session->thread_loop) ? 1 : 0;
-}
-
 int audio_pipewire_session_sample_rate(struct AudioSession* session) {
     if (!session) {
         return 0;
@@ -1029,13 +1022,6 @@ int audio_pipewire_playback_session_stop(struct PlaybackSession* session) {
     destroy_session_resources(session->thread_loop, &session->stream,
                               &session->core_listener, &session->core);
     return 0;
-}
-
-int audio_pipewire_playback_session_is_in_callback(struct PlaybackSession* session) {
-    if (!session) {
-        return 0;
-    }
-    return pw_thread_loop_in_thread(session->thread_loop) ? 1 : 0;
 }
 
 int audio_pipewire_playback_session_sample_rate(struct PlaybackSession* session) {

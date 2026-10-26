@@ -39,11 +39,9 @@ int audio_pipewire_device_type(struct AudioDevice* device);
 // セッション管理
 //
 // start は 0 で成功、負で失敗する。負の値は AudioPipeWireResult に対応する。
-// stop はコールバックのスレッド上から呼び出してはならない。呼び出し側は
-// audio_pipewire_session_is_in_callback で確認する。
+// stop はコールバックのスレッド上から呼び出してはならない。
 struct AudioSession* audio_pipewire_session_create(const char* device_id, int sample_rate, int channels);
 void audio_pipewire_session_destroy(struct AudioSession* session);
-int audio_pipewire_session_is_in_callback(struct AudioSession* session);
 int audio_pipewire_session_start(struct AudioSession* session, AudioFrameCallback callback, void* user_data);
 int audio_pipewire_session_stop(struct AudioSession* session);
 int audio_pipewire_session_sample_rate(struct AudioSession* session);
@@ -52,11 +50,9 @@ int audio_pipewire_session_channels(struct AudioSession* session);
 // 再生セッション管理
 //
 // start は 0 で成功、負で失敗する。負の値は AudioPipeWireResult に対応する。
-// stop はコールバックのスレッド上から呼び出してはならない。呼び出し側は
-// audio_pipewire_playback_session_is_in_callback で確認する。
+// stop はコールバックのスレッド上から呼び出してはならない。
 struct PlaybackSession* audio_pipewire_playback_session_create(const char* device_id, int sample_rate, int channels);
 void audio_pipewire_playback_session_destroy(struct PlaybackSession* session);
-int audio_pipewire_playback_session_is_in_callback(struct PlaybackSession* session);
 int audio_pipewire_playback_session_start(struct PlaybackSession* session, AudioPlaybackCallback callback, void* user_data);
 int audio_pipewire_playback_session_stop(struct PlaybackSession* session);
 int audio_pipewire_playback_session_sample_rate(struct PlaybackSession* session);
