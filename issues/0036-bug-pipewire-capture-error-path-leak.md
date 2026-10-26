@@ -1,7 +1,7 @@
 # audio_pipewire.c キャプチャ側 session_start エラーパスのリソースリークを修正する
 
 - Created: 2026-07-30
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-27
 - Branch: feature/fix-pipewire-capture-error-path-leak
 - Polished: {YYYY-MM-DD}
 
@@ -33,7 +33,6 @@
 
 ## 解決方法
 
-`src/audio_pipewire.c` の `audio_pipewire_session_start` 関数内:
-
-1. `pw_properties_new` 失敗時のエラーパスに `spa_hook_remove(&session->core_listener)` を追加する
-2. `pw_stream_new` 失敗時のエラーパスに `pw_properties_free(props)` と `spa_hook_remove(&session->core_listener)` を追加する
+- キャプチャと再生の start 失敗処理を `goto fail` と `destroy_session_resources` に統一した。
+- `pw_properties_new` 失敗時は `spa_hook_remove` と `pw_core_disconnect` を行い、stream と core を破棄する。
+- `pw_stream_new` は成否にかかわらず `props` の所有権を取得するため、`pw_properties_free` は呼ばない。失敗時は stream を破棄し、core listener を remove して core を切断する。
