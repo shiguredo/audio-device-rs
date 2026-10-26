@@ -1,7 +1,7 @@
 # セッション実行中を借用で表すガード API に変更する
 
 - Created: 2026-10-27
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-27
 - Branch: feature/change-session-guard-api
 - Polished: {YYYY-MM-DD}
 
@@ -31,29 +31,29 @@
 ```rust
 pub struct AudioCapture { /* ... */ }
 
-pub struct CaptureSession<'a> {
+pub struct AudioCaptureSession<'a> {
     capture: &'a mut AudioCapture,
 }
 
 impl AudioCapture {
-    pub fn start(&mut self) -> Result<CaptureSession<'_>>;
+    pub fn start(&mut self) -> Result<AudioCaptureSession<'_>>;
 }
 
-impl CaptureSession<'_> {
-    pub fn stop(self) -> Result<()>;
+impl AudioCaptureSession<'_> {
+    pub fn stop(self);
 }
 ```
 
 - ガードが `&mut AudioCapture` を保持するため、セッション中は `AudioCapture` のメソッドを呼べない。実行中の破棄もコンパイルエラーになる
-- `CaptureSession::stop` は C の `audio_pipewire_session_stop` / `audio_pulse_session_stop` / `audio_coreaudio_session_stop` を呼ぶ。いずれもコールバックの完了を待ってからリソースを破棄するため、コールバック実行中に別スレッドから停止しても安全
+- `AudioCaptureSession::stop` は C の `audio_pipewire_session_stop` / `audio_pulse_session_stop` / `audio_coreaudio_session_stop` を呼ぶ。いずれもコールバックの完了を待ってからリソースを破棄するため、コールバック実行中に別スレッドから停止しても安全
 - ガードの `Drop` でも停止する（停止忘れを防ぐ）
 - 実行中に読み取りたい値（`config` / `sample_rate` / `channels`）はガードに転送する
 - 実行中に別スレッドから停止する場合は、ガードをそのスレッドへ move して `stop` を呼ぶ
-- 代替案として typestate（`fn start(self) -> Result<CaptureSession>` / `fn stop(self) -> Result<AudioCapture>`）も検討する
+- 代替案として typestate（`fn start(self) -> Result<AudioCaptureSession>` / `fn stop(self) -> Result<AudioCapture>`）も検討する
 
 この方式にすると次が不要になる。
 
-- Rust 層の再入ガード（`session_is_in_callback` の参照）。C API の契約は C 利用者向けに残す
+- Rust 層と C API の再入ガード（`session_is_in_callback`）
 - `stop()` の `Result` 化と `Error::SessionStopFailed`（再入エラーが存在しなくなる）
 - `Drop` 時の use-after-free 経路（実行中の Drop がコンパイルエラーになる）
 
@@ -65,18 +65,22 @@ WASAPI も同じ形にする。`WasapiCaptureImpl` / `WasapiPlaybackImpl` はス
 - セッション実行中に `&mut AudioCapture` / `&mut AudioPlayback` を取得できないこと
 - 実行中に別スレッドからガード経由で停止できること
 - 既存の `examples/` と `tests/` が新 API に移行して通ること
-- Rust 層から `session_is_in_callback` の参照がなくなること
+- Rust 層と C API から `session_is_in_callback` を削除すること
 
 ## 解決方法
 
-1. `src/capture.rs` / `src/playback.rs` に `CaptureSession` / `PlaybackSession` を追加し、`AudioCapture::start` / `AudioPlayback::start` の戻り値をガードに変更する
-2. ガードに `stop` と `Drop` を実装し、C の `*_session_stop` を呼ぶ。`config` / `sample_rate` / `channels` はガードへ転送する
-3. `AudioCapture::stop` / `AudioPlayback::stop` を削除する（`CHANGES.md` に [CHANGE] として記載する）
-4. `src/capture_ffi.rs` / `src/playback_ffi.rs` / `src/capture_wasapi.rs` / `src/playback_wasapi.rs` から `session_is_in_callback` の参照とスレッド ID 比較を削除する
-5. `examples/` と `tests/` を新 API に移行する
-6. 実行中の drop と `&mut` の取得がコンパイルエラーになることを compile_fail の doctest で固定する
-7. C API の `*_session_is_in_callback` は C 利用者向けの契約として残し、全バックエンドでスレッド単位の実装に揃える
+- `src/capture.rs` / `src/playback.rs` に `AudioCaptureSession` / `AudioPlaybackSession` を追加し、`AudioCapture::start` / `AudioPlayback::start` の戻り値をガードに変更した
+- ガードは `&mut AudioCapture` / `&mut AudioPlayback` を保持し、`stop` と `Drop` で C の `*_session_stop` を呼ぶ。`config` / `sample_rate` / `channels` はガードから取得できるようにした
+- `AudioCapture::stop` / `AudioPlayback::stop` を削除した
+- `AudioCaptureSession::stop` / `AudioPlaybackSession::stop` は戻り値を持たない。再入に起因する停止失敗はガードにより発生しないため、`Error::SessionStopFailed` を削除した
+- `src/capture_ffi.rs` / `src/playback_ffi.rs` から `session_is_in_callback` の参照を削除した
+- C API の `*_session_is_in_callback` と `in_callback` 状態を全バックエンドから削除した。このクレートは C API を外部公開していないため、C 利用者向けの互換性は考慮しない
+- `src/capture_wasapi.rs` / `src/playback_wasapi.rs` からスレッド ID 比較による再入判定と `Drop` 時の panic を削除した
+- `audio.h` の stop の契約に「コールバックのスレッド上から呼び出さない場合、戻るまでに実行中のユーザーコールバックの完了を待ち、戻った後にユーザーコールバックを呼ばない」を追記した
+- `examples/` と `tests/` を新しいガード API に移行し、`README.md` の使い方も更新した
+- `AudioCapture::start` / `AudioPlayback::start` の doc に、セッション中の再 start と drop がコンパイルエラーになることを示す compile_fail doctest を追加した
+- `tests/session_lifecycle.rs` に、コールバックをブロックしたまま別スレッドからガード経由で停止するテストを追加した
 
 ## 後方互換
 
-公開 API の変更。`start` の戻り値が変わり、`AudioCapture::stop` / `AudioPlayback::stop` はガードへ移る。`CHANGES.md` に [CHANGE] として記載する。
+公開 API の変更。`start` の戻り値が変わり、`AudioCapture::stop` / `AudioPlayback::stop` は戻り値を持たないガードの `stop` へ移る。`CHANGES.md` に [CHANGE] として記載する。
