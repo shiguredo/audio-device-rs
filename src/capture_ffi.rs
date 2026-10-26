@@ -146,7 +146,7 @@ impl FfiCaptureImpl {
         }
 
         if let Some(session) = self.session {
-            // コールバック上からは stream を破棄できないため、再入 stop は拒否する
+            // コールバック上からの stop は禁止されているため、再入 stop を拒否する
             let in_callback = unsafe { (self.ops.session_is_in_callback)(session.as_ptr()) };
             if in_callback != 0 {
                 return Err(Error::SessionStopFailed);
