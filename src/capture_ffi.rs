@@ -37,7 +37,7 @@ struct CaptureOps {
 // ---------------------------------------------------------------------------
 
 pub(crate) struct CaptureContext {
-    callback: Box<dyn Fn(AudioFrame<'_>) + Send + Sync>,
+    callback: Box<dyn Fn(AudioFrame<'_>) + Send>,
 }
 
 // ---------------------------------------------------------------------------
@@ -58,7 +58,7 @@ impl FfiCaptureImpl {
     fn new(
         ops: &'static CaptureOps,
         config: AudioCaptureConfig,
-        callback: impl Fn(AudioFrame<'_>) + Send + Sync + 'static,
+        callback: impl Fn(AudioFrame<'_>) + Send + 'static,
     ) -> Result<Self> {
         // デバイス ID は C 側で C 文字列として扱われるため、内部に NUL バイトを
         // 含む場合は C 側へ渡す前に拒否する。
@@ -97,7 +97,7 @@ impl FfiCaptureImpl {
     #[cfg(enable_coreaudio)]
     pub(crate) fn new_coreaudio<F>(config: AudioCaptureConfig, callback: F) -> Result<Self>
     where
-        F: Fn(AudioFrame<'_>) + Send + Sync + 'static,
+        F: Fn(AudioFrame<'_>) + Send + 'static,
     {
         Self::new(&OPS_COREAUDIO, config, callback)
     }
@@ -105,7 +105,7 @@ impl FfiCaptureImpl {
     #[cfg(enable_pulse)]
     pub(crate) fn new_pulse<F>(config: AudioCaptureConfig, callback: F) -> Result<Self>
     where
-        F: Fn(AudioFrame<'_>) + Send + Sync + 'static,
+        F: Fn(AudioFrame<'_>) + Send + 'static,
     {
         Self::new(&OPS_PULSE, config, callback)
     }
@@ -113,7 +113,7 @@ impl FfiCaptureImpl {
     #[cfg(enable_pipewire)]
     pub(crate) fn new_pipewire<F>(config: AudioCaptureConfig, callback: F) -> Result<Self>
     where
-        F: Fn(AudioFrame<'_>) + Send + Sync + 'static,
+        F: Fn(AudioFrame<'_>) + Send + 'static,
     {
         Self::new(&OPS_PIPEWIRE, config, callback)
     }
@@ -169,8 +169,10 @@ impl Drop for FfiCaptureImpl {
     }
 }
 
-// SAFETY: FfiCaptureImpl は C のセッション API をスレッド間で移動して使用でき、
-// コールバックコンテキストは Send + Sync な Fn だけを保持する。
+// SAFETY: FfiCaptureImpl は C のセッション API をスレッド間で移動して使用できる。
+// コールバックコンテキストは Send な Fn だけを保持する。C のセッション API の
+// 契約により、コールバックは直列に呼ばれ、stop は実行中コールバックの完了を
+// 待つため、コールバックへの参照が同時に複数スレッドから使われることはない。
 unsafe impl Send for FfiCaptureImpl {}
 
 // ---------------------------------------------------------------------------

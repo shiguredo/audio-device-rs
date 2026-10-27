@@ -1,40 +1,51 @@
 //! `src/playback.rs` が提供する `AudioPlayback` の公開 API に対する単体テスト。
 
-// デバイス ID の C 文字列変換は FFI バックエンドでのみ行われるため、
-// その挙動を検証するテストは FFI バックエンドが有効な場合だけコンパイルする。
-#![cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
+// 各テストはデフォルトバックエンドの API を使うため、デフォルトバックエンドが
+// 有効な場合だけコンパイルする。
+#![cfg(any(
+    enable_default_coreaudio,
+    enable_default_pulse,
+    enable_default_pipewire,
+    enable_default_wasapi
+))]
 
-use shiguredo_audio_device::{AudioPlayback, AudioPlaybackConfig, Error, Result};
+use std::cell::Cell;
 
-/// 有効な FFI バックエンドを 1 つ選んで再生を構築する
-fn new_playback(config: AudioPlaybackConfig) -> Result<AudioPlayback> {
-    #[cfg(enable_coreaudio)]
-    {
-        AudioPlayback::new_coreaudio(config, |_, _, _| None)
-    }
-    #[cfg(all(not(enable_coreaudio), enable_pulse))]
-    {
-        AudioPlayback::new_pulse(config, |_, _, _| None)
-    }
-    #[cfg(all(not(enable_coreaudio), not(enable_pulse), enable_pipewire))]
-    {
-        AudioPlayback::new_pipewire(config, |_, _, _| None)
-    }
-}
+use shiguredo_audio_device::{AudioPlayback, AudioPlaybackConfig, Error, initialize_thread};
 
-/// NUL バイトを含むデバイス ID は C 側へ渡す前に拒否されること
+/// NUL バイトを含むデバイス ID は OS へ渡す前に拒否されること
 #[test]
 fn rejects_device_id_containing_nul() {
+    let _guard = initialize_thread().expect("テストスレッドを初期化できること");
     let config = AudioPlaybackConfig {
         device_id: Some("device\0id".to_string()),
         sample_rate: 48000,
         channels: 2,
     };
 
-    let result = new_playback(config);
+    let result = AudioPlayback::new(config, |_, _, _| None);
 
     assert!(
         matches!(result, Err(Error::InvalidDeviceId)),
         "NUL バイトを含むデバイス ID は InvalidDeviceId になること"
     );
+}
+
+/// デフォルトバックエンドの再生が `Cell<u64>` を捕捉したコールバックを
+/// 受け付けること。
+///
+/// このテストの目的は実行時の動作ではなく、コールバック内でだけ使う状態を
+/// 捕捉したコールバックを渡せることのコンパイル確認である。デバイスが無い
+/// 環境では `new` がエラーを返すため、`Ok` / `Err` のどちらでもテストを
+/// 成功させる。
+#[test]
+fn accepts_callback_capturing_cell() {
+    let _guard = initialize_thread().expect("テストスレッドを初期化できること");
+    let calls = Cell::new(0u64);
+
+    // 境界のコンパイル可否だけを確認するため、結果の種別は問わない
+    let _ = AudioPlayback::new(AudioPlaybackConfig::default(), move |_, _, _| {
+        calls.set(calls.get() + 1);
+        None
+    });
 }

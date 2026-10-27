@@ -1,40 +1,50 @@
 //! `src/capture.rs` が提供する `AudioCapture` の公開 API に対する単体テスト。
 
-// デバイス ID の C 文字列変換は FFI バックエンドでのみ行われるため、
-// その挙動を検証するテストは FFI バックエンドが有効な場合だけコンパイルする。
-#![cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
+// 各テストはデフォルトバックエンドの API を使うため、デフォルトバックエンドが
+// 有効な場合だけコンパイルする。
+#![cfg(any(
+    enable_default_coreaudio,
+    enable_default_pulse,
+    enable_default_pipewire,
+    enable_default_wasapi
+))]
 
-use shiguredo_audio_device::{AudioCapture, AudioCaptureConfig, Error, Result};
+use std::cell::Cell;
 
-/// 有効な FFI バックエンドを 1 つ選んでキャプチャを構築する
-fn new_capture(config: AudioCaptureConfig) -> Result<AudioCapture> {
-    #[cfg(enable_coreaudio)]
-    {
-        AudioCapture::new_coreaudio(config, |_| {})
-    }
-    #[cfg(all(not(enable_coreaudio), enable_pulse))]
-    {
-        AudioCapture::new_pulse(config, |_| {})
-    }
-    #[cfg(all(not(enable_coreaudio), not(enable_pulse), enable_pipewire))]
-    {
-        AudioCapture::new_pipewire(config, |_| {})
-    }
-}
+use shiguredo_audio_device::{AudioCapture, AudioCaptureConfig, Error, initialize_thread};
 
-/// NUL バイトを含むデバイス ID は C 側へ渡す前に拒否されること
+/// NUL バイトを含むデバイス ID は OS へ渡す前に拒否されること
 #[test]
 fn rejects_device_id_containing_nul() {
+    let _guard = initialize_thread().expect("テストスレッドを初期化できること");
     let config = AudioCaptureConfig {
         device_id: Some("device\0id".to_string()),
         sample_rate: 48000,
         channels: 1,
     };
 
-    let result = new_capture(config);
+    let result = AudioCapture::new(config, |_| {});
 
     assert!(
         matches!(result, Err(Error::InvalidDeviceId)),
         "NUL バイトを含むデバイス ID は InvalidDeviceId になること"
     );
+}
+
+/// デフォルトバックエンドのキャプチャが `Cell<u64>` を捕捉したコールバックを
+/// 受け付けること。
+///
+/// このテストの目的は実行時の動作ではなく、コールバック内でだけ使う状態を
+/// 捕捉したコールバックを渡せることのコンパイル確認である。デバイスが無い
+/// 環境では `new` がエラーを返すため、`Ok` / `Err` のどちらでもテストを
+/// 成功させる。
+#[test]
+fn accepts_callback_capturing_cell() {
+    let _guard = initialize_thread().expect("テストスレッドを初期化できること");
+    let calls = Cell::new(0u64);
+
+    // 境界のコンパイル可否だけを確認するため、結果の種別は問わない
+    let _ = AudioCapture::new(AudioCaptureConfig::default(), move |_| {
+        calls.set(calls.get() + 1);
+    });
 }

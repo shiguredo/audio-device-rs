@@ -43,6 +43,10 @@ impl AudioPlayback {
     /// 引数は `(frames, channels, sample_rate)` で、それぞれ要求フレーム数・
     /// チャンネル数・サンプルレートを表す。
     /// `None` を返すと無音が再生される。
+    ///
+    /// `callback` には `Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static`
+    /// を要求する。`callback` は再生開始後、バックエンドが管理するスレッド上で
+    /// 直列に呼ばれる。
     #[cfg(any(
         enable_default_coreaudio,
         enable_default_pulse,
@@ -51,7 +55,7 @@ impl AudioPlayback {
     ))]
     pub fn new<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
+        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
     {
         #[cfg(enable_default_coreaudio)]
         {
@@ -74,10 +78,11 @@ impl AudioPlayback {
     /// CoreAudio で再生を構築する。
     ///
     /// `callback` の引数は `(frames, channels, sample_rate)`。
+    /// コールバックはバックエンドが管理するスレッド上で直列に呼ばれる。
     #[cfg(enable_coreaudio)]
     pub fn new_coreaudio<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
+        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
     {
         Ok(Self(AudioPlaybackInner::Ffi(
             FfiPlaybackImpl::new_coreaudio(config, callback)?,
@@ -87,10 +92,11 @@ impl AudioPlayback {
     /// PulseAudio で再生を構築する。
     ///
     /// `callback` の引数は `(frames, channels, sample_rate)`。
+    /// コールバックはバックエンドが管理するスレッド上で直列に呼ばれる。
     #[cfg(enable_pulse)]
     pub fn new_pulse<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
+        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
     {
         Ok(Self(AudioPlaybackInner::Ffi(FfiPlaybackImpl::new_pulse(
             config, callback,
@@ -100,10 +106,11 @@ impl AudioPlayback {
     /// PipeWire で再生を構築する。
     ///
     /// `callback` の引数は `(frames, channels, sample_rate)`。
+    /// コールバックはバックエンドが管理するスレッド上で直列に呼ばれる。
     #[cfg(enable_pipewire)]
     pub fn new_pipewire<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
+        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
     {
         Ok(Self(AudioPlaybackInner::Ffi(
             FfiPlaybackImpl::new_pipewire(config, callback)?,
@@ -113,10 +120,11 @@ impl AudioPlayback {
     /// WASAPI で再生を構築する。
     ///
     /// `callback` の引数は `(frames, channels, sample_rate)`。
+    /// コールバックはバックエンドが管理するスレッド上で直列に呼ばれる。
     #[cfg(enable_wasapi)]
     pub fn new_wasapi<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
+        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
     {
         Ok(Self(AudioPlaybackInner::Wasapi(WasapiPlaybackImpl::new(
             config, callback,

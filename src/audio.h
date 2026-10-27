@@ -83,6 +83,8 @@ typedef int (*AudioPlaybackCallback)(void* user_data,
 //
 // コールバック:
 // - frames、channels、sample_rate、format はその呼び出しの音声形式を表す
+// - コールバックはセッションごとに直列に呼ばれる。コールバックを呼ぶスレッドは
+//   バックエンドが管理するスレッドである
 // - キャプチャの data はコールバックの実行中だけ有効
 // - 再生の buffer はコールバックの実行中だけ有効
 
