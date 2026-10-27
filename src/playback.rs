@@ -46,8 +46,7 @@ impl AudioPlayback {
     ///
     /// `callback` には `Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static`
     /// を要求する。`callback` は再生開始後、バックエンドが管理するスレッド上で
-    /// 直列に呼ばれる。セッションを停止すると、実行中のコールバックの完了を
-    /// 待ってから戻り、戻った後にコールバックを呼ばない。
+    /// 直列に呼ばれる。
     #[cfg(any(
         enable_default_coreaudio,
         enable_default_pulse,

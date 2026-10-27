@@ -14,8 +14,8 @@ use crate::common::{AudioCaptureConfig, AudioDeviceType, AudioFormat, AudioFrame
 use crate::device_wasapi::{ComGuard, SendHandle, SendPtr, build_wave_format, get_device_by_id};
 use crate::error::{Error, Result};
 
-pub(crate) struct WasapiCaptureContext {
-    pub(crate) callback: Box<dyn Fn(AudioFrame<'_>) + Send>,
+struct WasapiCaptureContext {
+    callback: Box<dyn Fn(AudioFrame<'_>) + Send>,
 }
 
 // SAFETY: WasapiCaptureContext は WasapiCaptureImpl の Box に保持され、キャプチャ
@@ -23,7 +23,7 @@ pub(crate) struct WasapiCaptureContext {
 // スレッドは join 後にコンテキストへアクセスしない。コールバックはキャプチャ
 // スレッドからのみ直列に呼ばれ、その実行中に WasapiCaptureImpl 側が context へ
 // アクセスすることもない。
-unsafe impl Send for SendPtr<*mut WasapiCaptureContext> {}
+unsafe impl Send for SendPtr<*const WasapiCaptureContext> {}
 
 struct SessionData {
     audio_client: IAudioClient,
@@ -34,7 +34,7 @@ struct SessionData {
     channels: i32,
 }
 
-// Safety: IAudioCaptureClient は COM の MTA (COINIT_MULTITHREADED) で初期化しており、
+// SAFETY: IAudioCaptureClient は COM の MTA (COINIT_MULTITHREADED) で初期化しており、
 // MTA オブジェクトはスレッド間で安全に移送できる。
 unsafe impl Send for SendPtr<IAudioCaptureClient> {}
 
@@ -157,9 +157,10 @@ impl WasapiCaptureImpl {
         let channels = session.channels;
 
         // コンテキストは self に残したまま、そのポインタだけをスレッドへ渡す。
-        // Box の内容は WasapiCaptureImpl が drop されるまで移動しないため、
-        // ポインタはスレッドの実行中ずっと有効である。
-        let context = SendPtr(std::ptr::from_ref(&*self.context).cast_mut());
+        // Box の内容は WasapiCaptureImpl が drop されるまで移動しない。stop は
+        // スレッドを join してから戻り、Box はその後 drop されるため、ポインタは
+        // スレッドの実行中ずっと有効である。
+        let context = SendPtr(ptr::from_ref(&*self.context));
         let running = Arc::clone(&self.running);
 
         // キャプチャスレッドを開始
@@ -262,7 +263,7 @@ fn capture_thread_func(
     format: AudioFormat,
     sample_rate: i32,
     channels: i32,
-    context: *mut WasapiCaptureContext,
+    context: *const WasapiCaptureContext,
     running: Arc<AtomicBool>,
 ) {
     // SAFETY: context は WasapiCaptureImpl の Box が保持する WasapiCaptureContext を

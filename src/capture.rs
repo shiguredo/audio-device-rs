@@ -46,8 +46,7 @@ impl AudioCapture {
     ///
     /// `callback` には `Fn(AudioFrame<'_>) + Send + 'static` を要求する。
     /// `callback` はキャプチャ開始後、キャプチャしたフレームごとに、バックエンドが
-    /// 管理するスレッド上で直列に呼ばれる。セッションを停止すると、実行中の
-    /// コールバックの完了を待ってから戻り、戻った後にコールバックを呼ばない。
+    /// 管理するスレッド上で直列に呼ばれる。
     #[cfg(any(
         enable_default_coreaudio,
         enable_default_pulse,

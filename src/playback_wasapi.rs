@@ -16,8 +16,8 @@ use crate::common::{
 use crate::device_wasapi::{ComGuard, SendHandle, SendPtr, build_wave_format, get_device_by_id};
 use crate::error::{Error, Result};
 
-pub(crate) struct PlaybackContext {
-    pub(crate) callback: Box<dyn Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send>,
+struct PlaybackContext {
+    callback: Box<dyn Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send>,
 }
 
 // SAFETY: PlaybackContext は WasapiPlaybackImpl の Box に保持され、再生スレッドの
@@ -25,7 +25,7 @@ pub(crate) struct PlaybackContext {
 // join 後にコンテキストへアクセスしない。コールバックは再生スレッドからのみ
 // 直列に呼ばれ、その実行中に WasapiPlaybackImpl 側が context へアクセスすることも
 // ない。
-unsafe impl Send for SendPtr<*mut PlaybackContext> {}
+unsafe impl Send for SendPtr<*const PlaybackContext> {}
 
 struct SessionData {
     audio_client: IAudioClient,
@@ -37,7 +37,7 @@ struct SessionData {
     buffer_frames: u32,
 }
 
-// Safety: IAudioRenderClient / IAudioClient は COM の MTA (COINIT_MULTITHREADED) で初期化しており、
+// SAFETY: IAudioRenderClient / IAudioClient は COM の MTA (COINIT_MULTITHREADED) で初期化しており、
 // MTA オブジェクトはスレッド間で安全に移送できる。
 unsafe impl Send for SendPtr<IAudioRenderClient> {}
 unsafe impl Send for SendPtr<IAudioClient> {}
@@ -174,9 +174,10 @@ impl WasapiPlaybackImpl {
         self.running.store(true, Ordering::Release);
 
         // コンテキストは self に残したまま、そのポインタだけをスレッドへ渡す。
-        // Box の内容は WasapiPlaybackImpl が drop されるまで移動しないため、
-        // ポインタはスレッドの実行中ずっと有効である。
-        let context = SendPtr(std::ptr::from_ref(&*self.context).cast_mut());
+        // Box の内容は WasapiPlaybackImpl が drop されるまで移動しない。stop は
+        // スレッドを join してから戻り、Box はその後 drop されるため、ポインタは
+        // スレッドの実行中ずっと有効である。
+        let context = SendPtr(std::ptr::from_ref(&*self.context));
         let running = Arc::clone(&self.running);
 
         // 再生スレッドを開始
@@ -278,7 +279,7 @@ fn playback_thread_func(
     sample_rate: i32,
     channels: i32,
     buffer_frames: u32,
-    context: *mut PlaybackContext,
+    context: *const PlaybackContext,
     running: Arc<AtomicBool>,
 ) {
     // SAFETY: context は WasapiPlaybackImpl の Box が保持する PlaybackContext を

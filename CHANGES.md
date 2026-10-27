@@ -26,8 +26,9 @@
   - `AudioCaptureSession::stop` / `AudioPlaybackSession::stop` は戻り値を持たない
   - Windows で `AudioCapture` と `AudioCaptureSession` が `Sync` でなくなる
   - @melpon
-- [UPDATE] キャプチャ・再生のコールバックに要求する境界から `Sync` を削除する
-  - コールバックはバックエンドが管理するスレッド上で直列に呼ばれるため、`Send` だけを要求する
+- [UPDATE] キャプチャ・再生のコールバックに要求するトレイト境界から `Sync` を削除する
+  - コールバックはバックエンドが管理するスレッド上で直列に呼ばれるため、`Sync` は要求しない
+  - コールバックはそのスレッド上で実行するため、`Send` と `'static` は引き続き要求する
   - `Cell` / `RefCell` / `mpsc::Receiver` などの `Send + !Sync` な状態を捕捉できる
   - @melpon
 - [FIX] `Cargo.toml` の `windows` 依存を MSRV 1.93 の cargo が解釈できる形式に修正する

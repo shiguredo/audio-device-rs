@@ -22,7 +22,7 @@ impl SendHandle {
 
 pub(crate) struct SendPtr<T>(pub(crate) T);
 
-// Safety: COM オブジェクトは MTA (COINIT_MULTITHREADED) で初期化しており、
+// COM オブジェクトは MTA (COINIT_MULTITHREADED) で初期化しており、
 // MTA オブジェクトはスレッド間で安全に移送できる。
 // 各具体型に対する unsafe impl Send は、利用側（capture_wasapi.rs, playback_wasapi.rs）で宣言する。
 impl<T> SendPtr<T> {
@@ -45,7 +45,7 @@ impl ComGuard {
     /// 呼び出し元スレッドが STA で初期化済みの場合は RPC_E_CHANGED_MODE が返るため、
     /// エラーとして報告する。
     pub(crate) fn init_mta() -> Result<Self> {
-        // Safety: CoInitializeEx は成功時にスレッドの COM 初期化カウンタを 1 増やす。
+        // SAFETY: CoInitializeEx は成功時にスレッドの COM 初期化カウンタを 1 増やす。
         // その解放は返したガードの drop で行う。
         unsafe {
             let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -62,7 +62,7 @@ impl ComGuard {
 
 impl Drop for ComGuard {
     fn drop(&mut self) {
-        // Safety: このガードは CoInitializeEx が成功したときにだけ生成される。
+        // SAFETY: このガードは CoInitializeEx が成功したときにだけ生成される。
         // !Send なので生成したスレッド以外では drop されず、ここで呼ぶ CoUninitialize は
         // 対応する CoInitializeEx と同じスレッドになる。
         unsafe {
@@ -263,6 +263,11 @@ pub(crate) fn get_device_by_id(
     device_id: Option<&str>,
     device_type: AudioDeviceType,
 ) -> Result<IMMDevice> {
+    // 内部に NUL バイトを含む場合は拒否する。
+    if device_id.is_some_and(|id| id.contains('\0')) {
+        return Err(Error::InvalidDeviceId);
+    }
+
     unsafe {
         // デバイス列挙子を作成
         let enumerator: IMMDeviceEnumerator =
