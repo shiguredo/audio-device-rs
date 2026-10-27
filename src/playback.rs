@@ -1,7 +1,7 @@
 //! オーディオ再生の定義。
 //!
 //! バックエンドに依存しない形で再生の開始・停止・設定取得を提供する
-//! [AudioPlayback] と [AudioPlaybackSession] を提供する。
+//! [AudioPlayback] と [AudioPlaybackSession] を定義する。
 
 use crate::common::{AudioPlaybackConfig, PlaybackFrame};
 use crate::error::Result;
@@ -14,24 +14,16 @@ use crate::playback_wasapi::WasapiPlaybackImpl;
 
 /// オーディオ再生。
 ///
-/// 再生を開始するには [AudioPlayback::start] を呼ぶ。開始すると
-/// [AudioPlaybackSession] が返り、そのガードが生存している間はこの値を借用する。
-/// そのため、セッション実行中にこの値を drop したり、再度 `start` を
-/// 呼んだりすることはできない。
+/// 再生を開始するには [AudioPlayback::start] を呼ぶ。
 pub struct AudioPlayback(AudioPlaybackInner);
 
 /// 実行中のオーディオ再生セッション。
 ///
 /// [AudioPlayback::start] が返す。この値が生存している間は [AudioPlayback] を
-/// 借用するため、`AudioPlayback` のメソッドを呼ぶことも drop することもできない。
-/// セッション中の設定や実際のサンプルレート・チャンネル数は、[AudioPlaybackSession::config] /
-/// [AudioPlaybackSession::sample_rate] / [AudioPlaybackSession::channels] から取得する。
-///
-/// 停止するには [AudioPlaybackSession::stop] を呼ぶ。`stop` は実行中のユーザー
-/// コールバックの完了を待ってから戻る。`stop` を呼ばずに drop した場合も停止し、
-/// 実行中のユーザーコールバックの完了を待つ。ガードは別のスレッドへ move できる
-/// ため、そのスレッドから `stop` を呼ぶことで停止できる。
-#[must_use = "dropping the session stops the playback immediately"]
+/// 借用する。停止は [AudioPlaybackSession::stop] で行い、`stop` を呼ばずに
+/// drop した場合も停止する。Drop は実行中のユーザーコールバックの完了を待つ。
+/// ガードは別のスレッドへ move できる。
+#[must_use = "dropping the session stops the playback"]
 pub struct AudioPlaybackSession<'a> {
     /// セッションを開始した再生
     playback: &'a mut AudioPlayback,
@@ -146,7 +138,7 @@ impl AudioPlayback {
     /// 次のコードは、セッションが `AudioPlayback` を借用している間に再度
     /// `start` を呼ぶためコンパイルエラーになる。
     ///
-    /// ```compile_fail
+    /// ```compile_fail,E0499
     /// fn cannot_start_twice(mut playback: shiguredo_audio_device::AudioPlayback) {
     ///     let session = playback.start().expect("playback must start");
     ///     let _ = playback.start();
@@ -157,7 +149,7 @@ impl AudioPlayback {
     /// 次のコードは、セッションが `AudioPlayback` を借用している間に
     /// `AudioPlayback` を drop するためコンパイルエラーになる。
     ///
-    /// ```compile_fail
+    /// ```compile_fail,E0505
     /// fn cannot_drop_while_running(mut playback: shiguredo_audio_device::AudioPlayback) {
     ///     let session = playback.start().expect("playback must start");
     ///     drop(playback);
@@ -221,24 +213,22 @@ impl AudioPlaybackSession<'_> {
     ///
     /// 実行中のユーザーコールバックがある場合は、その完了を待ってから戻る。
     /// 戻った後にこのセッションのユーザーコールバックが呼ばれることはない。
-    ///
-    /// 別のスレッドから呼ぶ場合は、そのスレッドで `initialize_thread()` を呼び、
-    /// 返り値をスレッドの終了まで保持すること。
     pub fn stop(self) {
-        self.playback.stop_session();
+        // Drop に停止処理を委譲する
+        drop(self);
     }
 
-    /// 再生設定を取得する。
+    /// [`AudioPlayback::config`] と同じ。
     pub fn config(&self) -> &AudioPlaybackConfig {
         self.playback.config()
     }
 
-    /// 実際のサンプルレートを取得する。
+    /// [`AudioPlayback::sample_rate`] と同じ。
     pub fn sample_rate(&self) -> i32 {
         self.playback.sample_rate()
     }
 
-    /// 実際のチャンネル数を取得する。
+    /// [`AudioPlayback::channels`] と同じ。
     pub fn channels(&self) -> i32 {
         self.playback.channels()
     }
@@ -246,7 +236,7 @@ impl AudioPlaybackSession<'_> {
 
 impl Drop for AudioPlaybackSession<'_> {
     fn drop(&mut self) {
-        // stop 済みでも各バックエンドの stop は冪等なので、停止忘れを防ぐため常に呼ぶ
+        // 停止忘れを防ぐため、ここでセッションを停止する
         self.playback.stop_session();
     }
 }

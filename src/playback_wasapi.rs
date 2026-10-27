@@ -251,7 +251,7 @@ impl Drop for WasapiPlaybackImpl {
     }
 }
 
-// Safety: COM オブジェクトは MTA (COINIT_MULTITHREADED) で初期化しており、
+// SAFETY: COM オブジェクトは MTA (COINIT_MULTITHREADED) で初期化しており、
 // MTA オブジェクトはスレッド間で安全に移送できる。
 unsafe impl Send for WasapiPlaybackImpl {}
 

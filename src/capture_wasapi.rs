@@ -227,10 +227,9 @@ impl Drop for WasapiCaptureImpl {
     }
 }
 
-// Safety: COM オブジェクトは MTA (COINIT_MULTITHREADED) で初期化しており、
+// SAFETY: COM オブジェクトは MTA (COINIT_MULTITHREADED) で初期化しており、
 // MTA オブジェクトはスレッド間で安全に移送できる。
 unsafe impl Send for WasapiCaptureImpl {}
-unsafe impl Sync for WasapiCaptureImpl {}
 
 /// パケットのキャプチャ時刻とデバイス位置の組。
 ///

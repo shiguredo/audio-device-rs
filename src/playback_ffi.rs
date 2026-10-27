@@ -181,8 +181,8 @@ impl Drop for FfiPlaybackImpl {
     }
 }
 
-// SAFETY: 内部に保持する FFI セッションポインタは C 側のスレッド安全性に従い、
-// PlaybackContext のコールバックは Box<dyn Fn + Send + Sync> でスレッド安全。
+// SAFETY: FfiPlaybackImpl は C のセッション API をスレッド間で移動して使用でき、
+// コールバックコンテキストは Send + Sync な Fn だけを保持する。
 unsafe impl Send for FfiPlaybackImpl {}
 
 // ---------------------------------------------------------------------------

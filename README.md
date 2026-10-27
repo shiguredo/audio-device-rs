@@ -108,13 +108,6 @@ cargo build -p shiguredo_audio_device --features pipewire
 
 ## 使い方
 
-ライブラリを使うすべてのスレッドの先頭で `initialize_thread()` を呼び、返り値をスレッドの終了まで保持してください。
-Windows では COM を MTA モードで初期化します。macOS / Linux では何もしません。
-
-```rust
-let _guard = shiguredo_audio_device::initialize_thread()?;
-```
-
 ### セッションの開始と停止
 
 `start()` はセッションを表す `AudioCaptureSession` / `AudioPlaybackSession` を返します。
@@ -122,8 +115,7 @@ let _guard = shiguredo_audio_device::initialize_thread()?;
 停止はガードの `stop()` で行います。`stop()` は実行中のコールバックの完了を待ってから戻ります。ガードを drop した場合も停止します。
 実行中に設定や実際のサンプルレート・チャンネル数を参照する場合は、ガードの `config()` / `sample_rate()` / `channels()` を使います。
 
-別のスレッドから停止する場合は、ガードをそのスレッドへ move して `stop()` を呼びます。
-停止するスレッドでも `initialize_thread()` を呼び、返り値をスレッドの終了まで保持してください。
+別のスレッドから停止する場合や、ガードを別のスレッドで drop する場合は、そのスレッドへガードを move して操作します。
 
 ### デバイス列挙
 

@@ -24,6 +24,7 @@
   - 実行中に参照する `config` / `sample_rate` / `channels` はガードから取得する
   - ガードを drop した場合も停止する
   - `AudioCaptureSession::stop` / `AudioPlaybackSession::stop` は戻り値を持たない
+  - Windows で `AudioCapture` と `AudioCaptureSession` が `Sync` でなくなる
   - @melpon
 - [FIX] `Cargo.toml` の `windows` 依存を MSRV 1.93 の cargo が解釈できる形式に修正する
   - @voluntas

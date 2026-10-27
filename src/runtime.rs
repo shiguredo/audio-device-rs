@@ -6,7 +6,7 @@ use crate::error::Result;
 
 /// オーディオライブラリを利用するスレッドの初期化状態を保持するガード。
 ///
-/// [`initialize_thread`] が返す。スレッドの終了まで保持すること。
+/// [`initialize_thread`] が返す。
 /// 初期化したスレッド以外で drop されないよう `!Send` / `!Sync` にしている。
 pub struct ThreadGuard {
     /// Windows では COM の MTA 初期化を保持する。
@@ -18,7 +18,7 @@ pub struct ThreadGuard {
 
 /// 現在のスレッドをオーディオライブラリを利用できる状態に初期化する。
 ///
-/// ライブラリを使うスレッドごとに、そのスレッドの先頭で呼ぶこと。
+/// ライブラリを利用するスレッドごとに、そのスレッドの先頭で呼ぶこと。
 /// 返された [`ThreadGuard`] はスレッドの終了まで保持すること。
 /// Windows では COM を MTA モードで初期化する。macOS / Linux では何もしない。
 ///

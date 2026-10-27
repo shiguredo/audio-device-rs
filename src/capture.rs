@@ -1,7 +1,7 @@
 //! オーディオキャプチャの定義。
 //!
 //! バックエンドに依存しない形でキャプチャの開始・停止・設定取得を提供する
-//! [AudioCapture] と [AudioCaptureSession] を提供する。
+//! [AudioCapture] と [AudioCaptureSession] を定義する。
 
 use crate::common::{AudioCaptureConfig, AudioFrame};
 use crate::error::Result;
@@ -14,24 +14,16 @@ use crate::capture_wasapi::WasapiCaptureImpl;
 
 /// オーディオキャプチャ。
 ///
-/// キャプチャを開始するには [AudioCapture::start] を呼ぶ。開始すると
-/// [AudioCaptureSession] が返り、そのガードが生存している間はこの値を借用する。
-/// そのため、セッション実行中にこの値を drop したり、再度 `start` を
-/// 呼んだりすることはできない。
+/// キャプチャを開始するには [AudioCapture::start] を呼ぶ。
 pub struct AudioCapture(AudioCaptureInner);
 
 /// 実行中のオーディオキャプチャセッション。
 ///
 /// [AudioCapture::start] が返す。この値が生存している間は [AudioCapture] を
-/// 借用するため、`AudioCapture` のメソッドを呼ぶことも drop することもできない。
-/// セッション中の設定や実際のサンプルレート・チャンネル数は、[AudioCaptureSession::config] /
-/// [AudioCaptureSession::sample_rate] / [AudioCaptureSession::channels] から取得する。
-///
-/// 停止するには [AudioCaptureSession::stop] を呼ぶ。`stop` は実行中のユーザー
-/// コールバックの完了を待ってから戻る。`stop` を呼ばずに drop した場合も停止し、
-/// 実行中のユーザーコールバックの完了を待つ。ガードは別のスレッドへ move できる
-/// ため、そのスレッドから `stop` を呼ぶことで停止できる。
-#[must_use = "dropping the session stops the capture immediately"]
+/// 借用する。停止は [AudioCaptureSession::stop] で行い、`stop` を呼ばずに
+/// drop した場合も停止する。Drop は実行中のユーザーコールバックの完了を待つ。
+/// ガードは別のスレッドへ move できる。
+#[must_use = "dropping the session stops the capture"]
 pub struct AudioCaptureSession<'a> {
     /// セッションを開始したキャプチャ
     capture: &'a mut AudioCapture,
@@ -158,7 +150,7 @@ impl AudioCapture {
     /// 次のコードは、セッションが `AudioCapture` を借用している間に再度
     /// `start` を呼ぶためコンパイルエラーになる。
     ///
-    /// ```compile_fail
+    /// ```compile_fail,E0499
     /// fn cannot_start_twice(mut capture: shiguredo_audio_device::AudioCapture) {
     ///     let session = capture.start().expect("capture must start");
     ///     let _ = capture.start();
@@ -169,7 +161,7 @@ impl AudioCapture {
     /// 次のコードは、セッションが `AudioCapture` を借用している間に
     /// `AudioCapture` を drop するためコンパイルエラーになる。
     ///
-    /// ```compile_fail
+    /// ```compile_fail,E0505
     /// fn cannot_drop_while_running(mut capture: shiguredo_audio_device::AudioCapture) {
     ///     let session = capture.start().expect("capture must start");
     ///     drop(capture);
@@ -234,27 +226,22 @@ impl AudioCaptureSession<'_> {
     /// キャプチャを停止する。
     ///
     /// 実行中のユーザーコールバックがある場合は、その完了を待ってから戻る。
-    /// 戻った後にこのセッションのユーザーコールバックが呼ばれることはない。
-    ///
-    /// 別のスレッドから呼ぶ場合は、そのスレッドで `initialize_thread()` を呼び、
-    /// 返り値をスレッドの終了まで保持すること。
+    /// この関数が戻った後にこのセッションのユーザーコールバックが呼ばれることはない。
     pub fn stop(self) {
-        self.capture.stop_session();
+        drop(self);
     }
 
-    /// キャプチャ設定を取得する。
-    ///
-    /// 構築時に渡された設定をそのまま返す。
+    /// [`AudioCapture::config`] と同じ。
     pub fn config(&self) -> &AudioCaptureConfig {
         self.capture.config()
     }
 
-    /// 実際のサンプルレートを取得する。
+    /// [`AudioCapture::sample_rate`] と同じ。
     pub fn sample_rate(&self) -> i32 {
         self.capture.sample_rate()
     }
 
-    /// 実際のチャンネル数を取得する。
+    /// [`AudioCapture::channels`] と同じ。
     pub fn channels(&self) -> i32 {
         self.capture.channels()
     }
@@ -262,7 +249,7 @@ impl AudioCaptureSession<'_> {
 
 impl Drop for AudioCaptureSession<'_> {
     fn drop(&mut self) {
-        // stop 済みでも各バックエンドの stop は冪等なので、停止忘れを防ぐため常に呼ぶ
+        // 停止忘れを防ぐため、ここでセッションを停止する
         self.capture.stop_session();
     }
 }
