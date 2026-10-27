@@ -108,20 +108,14 @@ cargo build -p shiguredo_audio_device --features pipewire
 
 ## 使い方
 
-ライブラリを使うすべてのスレッドの先頭で `initialize_thread()` を呼び、返り値をスレッドの終了まで保持してください。
-Windows では COM を MTA モードで初期化します。macOS / Linux では何もしません。
+### セッションの開始と停止
 
-```rust
-let _guard = shiguredo_audio_device::initialize_thread()?;
-```
+`start()` はセッションを表す `AudioCaptureSession` / `AudioPlaybackSession` を返します。
+ガードが生存している間は `AudioCapture` / `AudioPlayback` を借用するため、実行中にオブジェクトを破棄したり、再度 `start()` を呼んだりすることはできません。
+停止はガードの `stop()` で行います。`stop()` は実行中のコールバックの完了を待ってから戻ります。ガードを drop した場合も停止します。
+実行中に設定や実際のサンプルレート・チャンネル数を参照する場合は、ガードの `config()` / `sample_rate()` / `channels()` を使います。
 
-### コールバックからの start / stop
-
-キャプチャ・再生のコールバックから `start()` / `stop()` を呼び出してはいけません。
-コールバックからの `stop()` は停止処理を行わず `Error::SessionStopFailed` を返します。
-`stop()` は別のスレッドから呼び出してください。
-コールバックからオブジェクトを破棄しないでください。
-破棄した場合は panic します。
+別のスレッドから停止する場合や、ガードを別のスレッドで drop する場合は、そのスレッドへガードを move して操作します。
 
 ### デバイス列挙
 
@@ -185,12 +179,12 @@ let mut capture = AudioCapture::new(config, |frame| {
 })?;
 
 // キャプチャ開始
-capture.start()?;
+let session = capture.start()?;
 
 // ... キャプチャ中 ...
 
 // キャプチャ停止
-capture.stop()?;
+session.stop();
 ```
 
 Windows では `sample_rate` と `channels` で指定した S16 のストリームを開き、共有モードの形式変換でデバイスの形式から変換します。
@@ -219,11 +213,13 @@ let mut playback = AudioPlayback::new(config, |frames, channels, sample_rate| {
     PlaybackFrame::from_s16(&samples, channels, sample_rate).ok()
 })?;
 
-playback.start()?;
+// 再生開始
+let session = playback.start()?;
 
 // ... 再生中 ...
 
-playback.stop()?;
+// 再生停止
+session.stop();
 ```
 
 ## サンプル

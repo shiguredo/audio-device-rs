@@ -13,8 +13,6 @@ pub enum Error {
     SessionCreateFailed,
     /// オーディオセッションの開始に失敗した
     SessionStartFailed,
-    /// オーディオセッションの停止に失敗した
-    SessionStopFailed,
     /// COM の初期化に失敗した
     ComInitFailed,
     /// C 側から null ポインタが返された
@@ -44,7 +42,6 @@ impl fmt::Display for Error {
             Error::DeviceAccessDenied => write!(f, "audio access denied"),
             Error::SessionCreateFailed => write!(f, "failed to create audio session"),
             Error::SessionStartFailed => write!(f, "failed to start audio session"),
-            Error::SessionStopFailed => write!(f, "failed to stop audio session"),
             Error::ComInitFailed => write!(
                 f,
                 "COM initialization failed: thread has incompatible apartment model"

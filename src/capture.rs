@@ -1,7 +1,7 @@
 //! オーディオキャプチャの定義。
 //!
 //! バックエンドに依存しない形でキャプチャの開始・停止・設定取得を提供する
-//! [AudioCapture] を提供する。
+//! [AudioCapture] と [AudioCaptureSession] を定義する。
 
 use crate::common::{AudioCaptureConfig, AudioFrame};
 use crate::error::Result;
@@ -14,9 +14,20 @@ use crate::capture_wasapi::WasapiCaptureImpl;
 
 /// オーディオキャプチャ。
 ///
-/// オーディオコールバックからこの値を Drop してはならない。
-/// 破棄した場合は panic する。
+/// キャプチャを開始するには [AudioCapture::start] を呼ぶ。
 pub struct AudioCapture(AudioCaptureInner);
+
+/// 実行中のオーディオキャプチャセッション。
+///
+/// [AudioCapture::start] が返す。この値が生存している間は [AudioCapture] を
+/// 借用する。停止は [AudioCaptureSession::stop] で行い、`stop` を呼ばずに
+/// drop した場合も停止する。Drop は実行中のユーザーコールバックの完了を待つ。
+/// ガードは別のスレッドへ move できる。
+#[must_use = "dropping the session stops the capture"]
+pub struct AudioCaptureSession<'a> {
+    /// セッションを開始したキャプチャ
+    capture: &'a mut AudioCapture,
+}
 
 pub(crate) enum AudioCaptureInner {
     #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
@@ -125,25 +136,51 @@ impl AudioCapture {
     // -----------------------------------------------------------------------
 
     /// キャプチャを開始する。
-    pub fn start(&mut self) -> Result<()> {
-        match &mut self.0 {
-            #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
-            AudioCaptureInner::Ffi(inner) => inner.start(),
-            #[cfg(enable_wasapi)]
-            AudioCaptureInner::Wasapi(inner) => inner.start(),
-        }
-    }
-
-    /// キャプチャを停止する。
     ///
-    /// すでに停止している場合は何もしない。
+    /// 開始したセッションを表す [AudioCaptureSession] を返す。返されたガードが
+    /// 生存している間はこの `AudioCapture` を借用するため、再度 `start` を
+    /// 呼ぶことも、`AudioCapture` を drop することもできない。
     ///
     /// # Errors
     ///
-    /// 停止に失敗した場合に `Error::SessionStopFailed` を返す。
-    /// オーディオコールバックから呼び出した場合、停止処理を行わず
-    /// `Error::SessionStopFailed` を返す。
-    pub fn stop(&mut self) -> Result<()> {
+    /// 開始に失敗した場合に `Error::SessionStartFailed` を返す。
+    ///
+    /// # セッション中の借用
+    ///
+    /// 次のコードは、セッションが `AudioCapture` を借用している間に再度
+    /// `start` を呼ぶためコンパイルエラーになる。
+    ///
+    /// ```compile_fail,E0499
+    /// fn cannot_start_twice(mut capture: shiguredo_audio_device::AudioCapture) {
+    ///     let session = capture.start().expect("capture must start");
+    ///     let _ = capture.start();
+    ///     drop(session);
+    /// }
+    /// ```
+    ///
+    /// 次のコードは、セッションが `AudioCapture` を借用している間に
+    /// `AudioCapture` を drop するためコンパイルエラーになる。
+    ///
+    /// ```compile_fail,E0505
+    /// fn cannot_drop_while_running(mut capture: shiguredo_audio_device::AudioCapture) {
+    ///     let session = capture.start().expect("capture must start");
+    ///     drop(capture);
+    ///     drop(session);
+    /// }
+    /// ```
+    pub fn start(&mut self) -> Result<AudioCaptureSession<'_>> {
+        match &mut self.0 {
+            #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
+            AudioCaptureInner::Ffi(inner) => inner.start()?,
+            #[cfg(enable_wasapi)]
+            AudioCaptureInner::Wasapi(inner) => inner.start()?,
+        }
+
+        Ok(AudioCaptureSession { capture: self })
+    }
+
+    /// 実行中のセッションを停止する。
+    fn stop_session(&mut self) {
         match &mut self.0 {
             #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire))]
             AudioCaptureInner::Ffi(inner) => inner.stop(),
@@ -185,4 +222,34 @@ impl AudioCapture {
     }
 }
 
-unsafe impl Send for AudioCapture {}
+impl AudioCaptureSession<'_> {
+    /// キャプチャを停止する。
+    ///
+    /// 実行中のユーザーコールバックがある場合は、その完了を待ってから戻る。
+    /// この関数が戻った後にこのセッションのユーザーコールバックが呼ばれることはない。
+    pub fn stop(self) {
+        drop(self);
+    }
+
+    /// [`AudioCapture::config`] と同じ。
+    pub fn config(&self) -> &AudioCaptureConfig {
+        self.capture.config()
+    }
+
+    /// [`AudioCapture::sample_rate`] と同じ。
+    pub fn sample_rate(&self) -> i32 {
+        self.capture.sample_rate()
+    }
+
+    /// [`AudioCapture::channels`] と同じ。
+    pub fn channels(&self) -> i32 {
+        self.capture.channels()
+    }
+}
+
+impl Drop for AudioCaptureSession<'_> {
+    fn drop(&mut self) {
+        // 停止忘れを防ぐため、ここでセッションを停止する
+        self.capture.stop_session();
+    }
+}

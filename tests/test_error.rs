@@ -31,18 +31,3 @@ fn invalid_data_length_display_is_descriptive() {
         "チャンネル数の倍数が要求されていることが分かること: {message}"
     );
 }
-
-/// `SessionStopFailed` の表示がエラー内容を説明していること
-#[test]
-fn session_stop_failed_display_is_descriptive() {
-    let message = Error::SessionStopFailed.to_string();
-
-    assert!(
-        message.contains("stop"),
-        "停止のエラーであることが分かること: {message}"
-    );
-    assert!(
-        message.contains("audio session"),
-        "オーディオセッションのエラーであることが分かること: {message}"
-    );
-}

@@ -714,13 +714,6 @@ int audio_pulse_session_stop(struct AudioSession* session) {
     return 0;
 }
 
-int audio_pulse_session_is_in_callback(struct AudioSession* session) {
-    if (!session || !session->mainloop) {
-        return 0;
-    }
-    return pa_threaded_mainloop_in_thread(session->mainloop) ? 1 : 0;
-}
-
 int audio_pulse_session_sample_rate(struct AudioSession* session) {
     if (!session) {
         return 0;
@@ -933,13 +926,6 @@ int audio_pulse_playback_session_stop(struct PlaybackSession* session) {
     atomic_store(&session->running, 0);
     destroy_resources(&session->mainloop, &session->context, &session->stream);
     return 0;
-}
-
-int audio_pulse_playback_session_is_in_callback(struct PlaybackSession* session) {
-    if (!session || !session->mainloop) {
-        return 0;
-    }
-    return pa_threaded_mainloop_in_thread(session->mainloop) ? 1 : 0;
 }
 
 int audio_pulse_playback_session_sample_rate(struct PlaybackSession* session) {

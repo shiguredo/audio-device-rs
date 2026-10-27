@@ -30,7 +30,6 @@ struct PlaybackOps {
     ) -> i32,
     session_stop: unsafe extern "C" fn(session: *mut ffi::PlaybackSession) -> i32,
     session_destroy: unsafe extern "C" fn(session: *mut ffi::PlaybackSession),
-    session_is_in_callback: unsafe extern "C" fn(session: *mut ffi::PlaybackSession) -> i32,
     session_sample_rate: unsafe extern "C" fn(session: *mut ffi::PlaybackSession) -> i32,
     session_channels: unsafe extern "C" fn(session: *mut ffi::PlaybackSession) -> i32,
 }
@@ -132,10 +131,6 @@ impl FfiPlaybackImpl {
         let session = self.session.ok_or(Error::SessionStartFailed)?;
         let context = &mut *self.context;
 
-        if self.running {
-            return Ok(());
-        }
-
         // 再生用コールバックコンテキストのポインタを C 側に渡す。
         // FfiPlaybackImpl の生存期間中は Box<PlaybackContext> が有効であるため、
         // C 側からのコールバックは安全に参照できる。
@@ -152,26 +147,16 @@ impl FfiPlaybackImpl {
         Ok(())
     }
 
-    pub fn stop(&mut self) -> Result<()> {
+    pub fn stop(&mut self) {
         if !self.running {
-            return Ok(());
+            return;
         }
 
         if let Some(session) = self.session {
-            // コールバック上からの stop は禁止されているため、再入 stop を拒否する
-            let in_callback = unsafe { (self.ops.session_is_in_callback)(session.as_ptr()) };
-            if in_callback != 0 {
-                return Err(Error::SessionStopFailed);
-            }
-
-            let ret = unsafe { (self.ops.session_stop)(session.as_ptr()) };
-            if ret < 0 {
-                return Err(Error::SessionStopFailed);
-            }
+            unsafe { (self.ops.session_stop)(session.as_ptr()) };
         }
 
         self.running = false;
-        Ok(())
     }
 
     pub fn config(&self) -> &AudioPlaybackConfig {
@@ -189,22 +174,15 @@ impl FfiPlaybackImpl {
 
 impl Drop for FfiPlaybackImpl {
     fn drop(&mut self) {
-        if let Some(session) = self.session {
-            let in_callback = unsafe { (self.ops.session_is_in_callback)(session.as_ptr()) };
-            if in_callback != 0 {
-                panic!("AudioPlayback must not be dropped from its callback");
-            }
-        }
-
-        let _ = self.stop();
+        self.stop();
         if let Some(session) = self.session.take() {
             unsafe { (self.ops.session_destroy)(session.as_ptr()) };
         }
     }
 }
 
-// SAFETY: 内部に保持する FFI セッションポインタは C 側のスレッド安全性に従い、
-// PlaybackContext のコールバックは Box<dyn Fn + Send + Sync> でスレッド安全。
+// SAFETY: FfiPlaybackImpl は C のセッション API をスレッド間で移動して使用でき、
+// コールバックコンテキストは Send + Sync な Fn だけを保持する。
 unsafe impl Send for FfiPlaybackImpl {}
 
 // ---------------------------------------------------------------------------
@@ -267,7 +245,6 @@ const OPS_COREAUDIO: PlaybackOps = PlaybackOps {
     session_start: ffi::audio_coreaudio_playback_session_start,
     session_stop: ffi::audio_coreaudio_playback_session_stop,
     session_destroy: ffi::audio_coreaudio_playback_session_destroy,
-    session_is_in_callback: ffi::audio_coreaudio_playback_session_is_in_callback,
     session_sample_rate: ffi::audio_coreaudio_playback_session_sample_rate,
     session_channels: ffi::audio_coreaudio_playback_session_channels,
 };
@@ -278,7 +255,6 @@ const OPS_PULSE: PlaybackOps = PlaybackOps {
     session_start: ffi::audio_pulse_playback_session_start,
     session_stop: ffi::audio_pulse_playback_session_stop,
     session_destroy: ffi::audio_pulse_playback_session_destroy,
-    session_is_in_callback: ffi::audio_pulse_playback_session_is_in_callback,
     session_sample_rate: ffi::audio_pulse_playback_session_sample_rate,
     session_channels: ffi::audio_pulse_playback_session_channels,
 };
@@ -289,7 +265,6 @@ const OPS_PIPEWIRE: PlaybackOps = PlaybackOps {
     session_start: ffi::audio_pipewire_playback_session_start,
     session_stop: ffi::audio_pipewire_playback_session_stop,
     session_destroy: ffi::audio_pipewire_playback_session_destroy,
-    session_is_in_callback: ffi::audio_pipewire_playback_session_is_in_callback,
     session_sample_rate: ffi::audio_pipewire_playback_session_sample_rate,
     session_channels: ffi::audio_pipewire_playback_session_channels,
 };
