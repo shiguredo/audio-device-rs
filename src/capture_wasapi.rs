@@ -15,9 +15,15 @@ use crate::device_wasapi::{ComGuard, SendHandle, SendPtr, build_wave_format, get
 use crate::error::{Error, Result};
 
 pub(crate) struct WasapiCaptureContext {
-    pub(crate) callback: Box<dyn Fn(AudioFrame<'_>) + Send + Sync>,
-    pub(crate) running: AtomicBool,
+    pub(crate) callback: Box<dyn Fn(AudioFrame<'_>) + Send>,
 }
+
+// SAFETY: WasapiCaptureContext は WasapiCaptureImpl の Box に保持され、キャプチャ
+// スレッドの実行中は drop されない。stop はスレッドを join してから戻るため、
+// スレッドは join 後にコンテキストへアクセスしない。コールバックはキャプチャ
+// スレッドからのみ直列に呼ばれ、その実行中に WasapiCaptureImpl 側が context へ
+// アクセスすることもない。
+unsafe impl Send for SendPtr<*mut WasapiCaptureContext> {}
 
 struct SessionData {
     audio_client: IAudioClient,
@@ -34,7 +40,10 @@ unsafe impl Send for SendPtr<IAudioCaptureClient> {}
 
 pub(crate) struct WasapiCaptureImpl {
     session: Option<SessionData>,
-    context: Option<Arc<WasapiCaptureContext>>,
+    /// ユーザーコールバックを保持するコンテキスト
+    context: Box<WasapiCaptureContext>,
+    /// キャプチャスレッドと停止処理で共有する実行状態
+    running: Arc<AtomicBool>,
     capture_thread: Option<thread::JoinHandle<()>>,
     config: AudioCaptureConfig,
     actual_sample_rate: i32,
@@ -44,7 +53,7 @@ pub(crate) struct WasapiCaptureImpl {
 impl WasapiCaptureImpl {
     pub fn new<F>(config: AudioCaptureConfig, callback: F) -> Result<Self>
     where
-        F: Fn(AudioFrame<'_>) + Send + Sync + 'static,
+        F: Fn(AudioFrame<'_>) + Send + 'static,
     {
         // デバイスを取得（キャプチャなので入力デバイス）
         let device = get_device_by_id(config.device_id.as_deref(), AudioDeviceType::Input)?;
@@ -103,9 +112,8 @@ impl WasapiCaptureImpl {
                 Error::SessionCreateFailed
             })?;
 
-            let context = Arc::new(WasapiCaptureContext {
+            let context = Box::new(WasapiCaptureContext {
                 callback: Box::new(callback),
-                running: AtomicBool::new(false),
             });
 
             Ok(Self {
@@ -117,7 +125,8 @@ impl WasapiCaptureImpl {
                     sample_rate,
                     channels,
                 }),
-                context: Some(context),
+                context,
+                running: Arc::new(AtomicBool::new(false)),
                 capture_thread: None,
                 config,
                 actual_sample_rate: sample_rate,
@@ -128,7 +137,6 @@ impl WasapiCaptureImpl {
 
     pub fn start(&mut self) -> Result<()> {
         let session = self.session.as_ref().ok_or(Error::SessionStartFailed)?;
-        let context = self.context.as_ref().ok_or(Error::SessionStartFailed)?;
 
         // オーディオクライアントを開始
         unsafe {
@@ -139,7 +147,7 @@ impl WasapiCaptureImpl {
         }
 
         // スレッド生成前に running フラグを立てる
-        context.running.store(true, Ordering::Release);
+        self.running.store(true, Ordering::Release);
 
         // キャプチャに必要なデータをクローン（Send ラッパーで包む）
         let capture_client = SendPtr(session.capture_client.clone());
@@ -148,7 +156,11 @@ impl WasapiCaptureImpl {
         let sample_rate = session.sample_rate;
         let channels = session.channels;
 
-        let thread_context = Arc::clone(context);
+        // コンテキストは self に残したまま、そのポインタだけをスレッドへ渡す。
+        // Box の内容は WasapiCaptureImpl が drop されるまで移動しないため、
+        // ポインタはスレッドの実行中ずっと有効である。
+        let context = SendPtr(std::ptr::from_ref(&*self.context).cast_mut());
+        let running = Arc::clone(&self.running);
 
         // キャプチャスレッドを開始
         let handle = thread::Builder::new()
@@ -161,11 +173,12 @@ impl WasapiCaptureImpl {
                     format,
                     sample_rate,
                     channels,
-                    thread_context,
+                    context.into_inner(),
+                    running,
                 );
             })
             .map_err(|_| {
-                context.running.store(false, Ordering::Release);
+                self.running.store(false, Ordering::Release);
                 unsafe {
                     let _ = session.audio_client.Stop();
                 }
@@ -177,10 +190,8 @@ impl WasapiCaptureImpl {
     }
 
     pub fn stop(&mut self) {
-        if let Some(context) = &self.context
-            && context.running.load(Ordering::Acquire)
-        {
-            context.running.store(false, Ordering::Release);
+        if self.running.load(Ordering::Acquire) {
+            self.running.store(false, Ordering::Release);
 
             // イベントをシグナル状態にしてスレッドを起こす
             if let Some(session) = &self.session {
@@ -242,14 +253,23 @@ struct TimestampAnchor {
 }
 
 /// キャプチャスレッド関数
+///
+/// `context` は `WasapiCaptureContext` を指す。この関数が戻るまで、その
+/// コンテキストが存続することを前提とする。
 fn capture_thread_func(
     capture_client: IAudioCaptureClient,
     event_handle: HANDLE,
     format: AudioFormat,
     sample_rate: i32,
     channels: i32,
-    context: Arc<WasapiCaptureContext>,
+    context: *mut WasapiCaptureContext,
+    running: Arc<AtomicBool>,
 ) {
+    // SAFETY: context は WasapiCaptureImpl の Box が保持する WasapiCaptureContext を
+    // 指す。stop はこのスレッドを join してから戻るため、このスレッドの実行中は
+    // コンテキストが生存する。コールバックはこのスレッドからしか呼ばれない。
+    let context = unsafe { &*context };
+
     unsafe {
         // タイムスタンプ用のパフォーマンスカウンタ
         let mut frequency = 0i64;
@@ -260,10 +280,10 @@ fn capture_thread_func(
         // コールバックへ渡した直前のパケットのタイムスタンプ
         let mut last_timestamp_us: Option<i64> = None;
 
-        while context.running.load(Ordering::Acquire) {
+        while running.load(Ordering::Acquire) {
             // イベント待機（10ms タイムアウト）
             let wait_result = WaitForSingleObject(event_handle, 10);
-            if !context.running.load(Ordering::Acquire) {
+            if !running.load(Ordering::Acquire) {
                 break;
             }
             if wait_result != WAIT_OBJECT_0 && wait_result != WAIT_TIMEOUT {
@@ -279,7 +299,7 @@ fn capture_thread_func(
                 if packet_length == 0 {
                     break;
                 }
-                if !context.running.load(Ordering::Acquire) {
+                if !running.load(Ordering::Acquire) {
                     break;
                 }
 

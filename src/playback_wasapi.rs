@@ -17,9 +17,15 @@ use crate::device_wasapi::{ComGuard, SendHandle, SendPtr, build_wave_format, get
 use crate::error::{Error, Result};
 
 pub(crate) struct PlaybackContext {
-    pub(crate) callback: Box<dyn Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync>,
-    pub(crate) running: AtomicBool,
+    pub(crate) callback: Box<dyn Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send>,
 }
+
+// SAFETY: PlaybackContext は WasapiPlaybackImpl の Box に保持され、再生スレッドの
+// 実行中は drop されない。stop はスレッドを join してから戻るため、スレッドは
+// join 後にコンテキストへアクセスしない。コールバックは再生スレッドからのみ
+// 直列に呼ばれ、その実行中に WasapiPlaybackImpl 側が context へアクセスすることも
+// ない。
+unsafe impl Send for SendPtr<*mut PlaybackContext> {}
 
 struct SessionData {
     audio_client: IAudioClient,
@@ -39,7 +45,10 @@ unsafe impl Send for SendPtr<IAudioClient> {}
 /// オーディオ再生
 pub(crate) struct WasapiPlaybackImpl {
     session: Option<SessionData>,
-    context: Option<Arc<PlaybackContext>>,
+    /// ユーザーコールバックを保持するコンテキスト
+    context: Box<PlaybackContext>,
+    /// 再生スレッドと停止処理で共有する実行状態
+    running: Arc<AtomicBool>,
     playback_thread: Option<thread::JoinHandle<()>>,
     config: AudioPlaybackConfig,
     actual_sample_rate: i32,
@@ -53,7 +62,7 @@ impl WasapiPlaybackImpl {
     /// データがない場合は `None` を返すと無音が再生される。
     pub fn new<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
+        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
     {
         // デバイスを取得（再生なので出力デバイス）
         let device = get_device_by_id(config.device_id.as_deref(), AudioDeviceType::Output)?;
@@ -116,9 +125,8 @@ impl WasapiPlaybackImpl {
                 Error::SessionCreateFailed
             })?;
 
-            let context = Arc::new(PlaybackContext {
+            let context = Box::new(PlaybackContext {
                 callback: Box::new(callback),
-                running: AtomicBool::new(false),
             });
 
             Ok(Self {
@@ -131,7 +139,8 @@ impl WasapiPlaybackImpl {
                     channels,
                     buffer_frames,
                 }),
-                context: Some(context),
+                context,
+                running: Arc::new(AtomicBool::new(false)),
                 playback_thread: None,
                 config,
                 actual_sample_rate: sample_rate,
@@ -143,7 +152,6 @@ impl WasapiPlaybackImpl {
     /// 再生を開始
     pub fn start(&mut self) -> Result<()> {
         let session = self.session.as_ref().ok_or(Error::SessionStartFailed)?;
-        let context = self.context.as_ref().ok_or(Error::SessionStartFailed)?;
 
         // オーディオクライアントを開始
         unsafe {
@@ -163,10 +171,13 @@ impl WasapiPlaybackImpl {
         let buffer_frames = session.buffer_frames;
 
         // スレッド生成前に running フラグを立てる
-        context.running.store(true, Ordering::Release);
+        self.running.store(true, Ordering::Release);
 
-        // スレッドに渡すための context クローン
-        let thread_context = Arc::clone(context);
+        // コンテキストは self に残したまま、そのポインタだけをスレッドへ渡す。
+        // Box の内容は WasapiPlaybackImpl が drop されるまで移動しないため、
+        // ポインタはスレッドの実行中ずっと有効である。
+        let context = SendPtr(std::ptr::from_ref(&*self.context).cast_mut());
+        let running = Arc::clone(&self.running);
 
         // 再生スレッドを開始
         let handle = thread::Builder::new()
@@ -181,11 +192,12 @@ impl WasapiPlaybackImpl {
                     sample_rate,
                     channels,
                     buffer_frames,
-                    thread_context,
+                    context.into_inner(),
+                    running,
                 );
             })
             .map_err(|_| {
-                context.running.store(false, Ordering::Release);
+                self.running.store(false, Ordering::Release);
                 unsafe {
                     let _ = session.audio_client.Stop();
                 }
@@ -198,10 +210,8 @@ impl WasapiPlaybackImpl {
 
     /// 再生を停止
     pub fn stop(&mut self) {
-        if let Some(context) = &self.context
-            && context.running.load(Ordering::Acquire)
-        {
-            context.running.store(false, Ordering::Release);
+        if self.running.load(Ordering::Acquire) {
+            self.running.store(false, Ordering::Release);
 
             // イベントをシグナル状態にしてスレッドを起こす
             if let Some(session) = &self.session {
@@ -256,6 +266,9 @@ impl Drop for WasapiPlaybackImpl {
 unsafe impl Send for WasapiPlaybackImpl {}
 
 /// 再生スレッド関数
+///
+/// `context` は `PlaybackContext` を指す。この関数が戻るまで、そのコンテキストが
+/// 存続することを前提とする。
 #[expect(clippy::too_many_arguments)]
 fn playback_thread_func(
     render_client: IAudioRenderClient,
@@ -265,13 +278,19 @@ fn playback_thread_func(
     sample_rate: i32,
     channels: i32,
     buffer_frames: u32,
-    context: Arc<PlaybackContext>,
+    context: *mut PlaybackContext,
+    running: Arc<AtomicBool>,
 ) {
+    // SAFETY: context は WasapiPlaybackImpl の Box が保持する PlaybackContext を
+    // 指す。stop はこのスレッドを join してから戻るため、このスレッドの実行中は
+    // コンテキストが生存する。コールバックはこのスレッドからしか呼ばれない。
+    let context = unsafe { &*context };
+
     // running フラグが false になるまでループする
-    while context.running.load(Ordering::Acquire) {
+    while running.load(Ordering::Acquire) {
         // バッファに空きができるまでイベントを待機する
         let wait_result = unsafe { WaitForSingleObject(event_handle, 10) };
-        if !context.running.load(Ordering::Acquire) {
+        if !running.load(Ordering::Acquire) {
             break;
         }
         if wait_result != WAIT_OBJECT_0 && wait_result != WAIT_TIMEOUT {

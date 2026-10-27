@@ -39,7 +39,7 @@ struct PlaybackOps {
 // ---------------------------------------------------------------------------
 
 pub(crate) struct PlaybackContext {
-    callback: Box<dyn Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync>,
+    callback: Box<dyn Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send>,
 }
 
 // ---------------------------------------------------------------------------
@@ -67,7 +67,7 @@ impl FfiPlaybackImpl {
     fn new(
         ops: &'static PlaybackOps,
         config: AudioPlaybackConfig,
-        callback: impl Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
+        callback: impl Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
     ) -> Result<Self> {
         // デバイス ID は C 側で C 文字列として扱われるため、内部に NUL バイトを
         // 含む場合は C 側へ渡す前に拒否する。
@@ -106,7 +106,7 @@ impl FfiPlaybackImpl {
     #[cfg(enable_coreaudio)]
     pub(crate) fn new_coreaudio<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
+        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
     {
         Self::new(&OPS_COREAUDIO, config, callback)
     }
@@ -114,7 +114,7 @@ impl FfiPlaybackImpl {
     #[cfg(enable_pulse)]
     pub(crate) fn new_pulse<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
+        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
     {
         Self::new(&OPS_PULSE, config, callback)
     }
@@ -122,7 +122,7 @@ impl FfiPlaybackImpl {
     #[cfg(enable_pipewire)]
     pub(crate) fn new_pipewire<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
+        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
     {
         Self::new(&OPS_PIPEWIRE, config, callback)
     }
@@ -181,8 +181,10 @@ impl Drop for FfiPlaybackImpl {
     }
 }
 
-// SAFETY: FfiPlaybackImpl は C のセッション API をスレッド間で移動して使用でき、
-// コールバックコンテキストは Send + Sync な Fn だけを保持する。
+// SAFETY: FfiPlaybackImpl は C のセッション API をスレッド間で移動して使用できる。
+// コールバックコンテキストは Send な Fn だけを保持する。C のセッション API の
+// 契約により、コールバックは直列に呼ばれ、stop は実行中コールバックの完了を
+// 待つため、コールバックへの参照が同時に複数スレッドから使われることはない。
 unsafe impl Send for FfiPlaybackImpl {}
 
 // ---------------------------------------------------------------------------
@@ -275,7 +277,7 @@ mod tests {
 
     /// テスト用の PlaybackContext を作成する
     fn make_context(
-        cb: impl Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
+        cb: impl Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
     ) -> Box<PlaybackContext> {
         Box::new(PlaybackContext {
             callback: Box::new(cb),
