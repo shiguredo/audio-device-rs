@@ -1,7 +1,7 @@
 # コールバック境界を FnMut + Send にする
 
 - Created: 2026-10-27
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-28
 - Branch: feature/update-callback-fnmut
 - Polished: {YYYY-MM-DD}
 
@@ -90,3 +90,14 @@
 
 - cpal のデータコールバックは `FnMut(...) + Send + 'static` を要求している
 - video-device-rs は `Fn + Send` のままで、`FnMut` にはしていない。本 issue は video-device-rs の追従ではなく、audio-device-rs のコールバックを状態付きで扱うための拡張である
+
+## 解決方法
+
+- `AudioCapture::new` / `new_coreaudio` / `new_pulse` / `new_pipewire` / `new_wasapi` と `AudioPlayback` の同名 API のコールバック境界を `Fn(...) + Send + 'static` から `FnMut(...) + Send + 'static` に変更した
+- `CaptureContext` / `PlaybackContext` の callback を `RefCell<Box<dyn FnMut(...) + Send>>` で保持し、`frame_callback` / `playback_callback` から `borrow_mut()` で呼ぶようにした
+- WASAPI の `WasapiCaptureContext` / `PlaybackContext` も `RefCell` で保持し、専用スレッドから `borrow_mut()` で呼ぶようにした。0048 の `Box` + `SendPtr` 構造は維持した
+- 当初の設計では `UnsafeCell` を想定していたが、同一スレッド内の再入検出と `unsafe` の削減のため `RefCell` を採用した。コールバックは単一のバックエンドスレッドから直列に呼ばれる契約を維持している
+- `examples/playback_sine.rs` の位相保持を `AtomicU64` から `u64` に変更し、`tests/test_device_timing.rs` の位相保持を `Arc<AtomicU64>` から `&mut u64` に変更した
+- `tests/test_capture.rs` / `tests/test_playback.rs` に、`u64` と `VecDeque` をコールバック内で直接更新する `FnMut` コールバックのコンパイル確認テストを追加した
+- `README.md` の再生例を `FnMut` で状態を持つ形に更新し、`CHANGES.md` に `[UPDATE]` エントリを追記した
+- `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace -- --test-threads=1` を実行して成功を確認した

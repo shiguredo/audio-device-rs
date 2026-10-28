@@ -3,6 +3,7 @@
 //! バックエンドごとに FFI 関数群を [CaptureOps] で渡し、[FfiCaptureImpl] が
 //! キャプチャの実装を一括で提供する。
 
+use std::cell::RefCell;
 use std::ffi::{CString, c_char, c_void};
 use std::ptr::NonNull;
 
@@ -36,8 +37,13 @@ struct CaptureOps {
 // コールバックコンテキスト
 // ---------------------------------------------------------------------------
 
+/// キャプチャのユーザーコールバック。
+type CaptureCallback = Box<dyn FnMut(AudioFrame<'_>) + Send>;
+
 pub(crate) struct CaptureContext {
-    callback: Box<dyn Fn(AudioFrame<'_>) + Send>,
+    // コールバックは `&mut` を要求するが、C 側には `CaptureContext` の共有参照
+    // として渡すため、内側だけを `RefCell` で可変にする。
+    callback: RefCell<CaptureCallback>,
 }
 
 // ---------------------------------------------------------------------------
@@ -58,7 +64,7 @@ impl FfiCaptureImpl {
     fn new(
         ops: &'static CaptureOps,
         config: AudioCaptureConfig,
-        callback: impl Fn(AudioFrame<'_>) + Send + 'static,
+        callback: impl FnMut(AudioFrame<'_>) + Send + 'static,
     ) -> Result<Self> {
         // デバイス ID は C 側で C 文字列として扱われるため、内部に NUL バイトを
         // 含む場合は C 側へ渡す前に拒否する。
@@ -79,8 +85,9 @@ impl FfiCaptureImpl {
         let actual_sample_rate = unsafe { (ops.session_sample_rate)(session.as_ptr()) };
         let actual_channels = unsafe { (ops.session_channels)(session.as_ptr()) };
 
+        let callback: CaptureCallback = Box::new(callback);
         let context = Box::new(CaptureContext {
-            callback: Box::new(callback),
+            callback: RefCell::new(callback),
         });
 
         Ok(Self {
@@ -97,7 +104,7 @@ impl FfiCaptureImpl {
     #[cfg(enable_coreaudio)]
     pub(crate) fn new_coreaudio<F>(config: AudioCaptureConfig, callback: F) -> Result<Self>
     where
-        F: Fn(AudioFrame<'_>) + Send + 'static,
+        F: FnMut(AudioFrame<'_>) + Send + 'static,
     {
         Self::new(&OPS_COREAUDIO, config, callback)
     }
@@ -105,7 +112,7 @@ impl FfiCaptureImpl {
     #[cfg(enable_pulse)]
     pub(crate) fn new_pulse<F>(config: AudioCaptureConfig, callback: F) -> Result<Self>
     where
-        F: Fn(AudioFrame<'_>) + Send + 'static,
+        F: FnMut(AudioFrame<'_>) + Send + 'static,
     {
         Self::new(&OPS_PULSE, config, callback)
     }
@@ -113,16 +120,20 @@ impl FfiCaptureImpl {
     #[cfg(enable_pipewire)]
     pub(crate) fn new_pipewire<F>(config: AudioCaptureConfig, callback: F) -> Result<Self>
     where
-        F: Fn(AudioFrame<'_>) + Send + 'static,
+        F: FnMut(AudioFrame<'_>) + Send + 'static,
     {
         Self::new(&OPS_PIPEWIRE, config, callback)
     }
 
     pub fn start(&mut self) -> Result<()> {
         let session = self.session.ok_or(Error::SessionStartFailed)?;
-        let context = &mut *self.context;
 
-        let context_ptr = context as *mut CaptureContext as *mut c_void;
+        // C 側にはコンテキストのポインタだけを渡す。Box の内容は FfiCaptureImpl が
+        // drop されるまで移動しないため、コールバックの実行中もコンテキストは
+        // 有効である。
+        let context_ptr = std::ptr::from_ref(&*self.context)
+            .cast_mut()
+            .cast::<c_void>();
 
         let ret = unsafe {
             (self.ops.session_start)(session.as_ptr(), Some(frame_callback), context_ptr)
@@ -170,9 +181,9 @@ impl Drop for FfiCaptureImpl {
 }
 
 // SAFETY: FfiCaptureImpl は C のセッション API をスレッド間で移動して使用できる。
-// コールバックコンテキストは Send な Fn だけを保持する。C のセッション API の
+// コールバックコンテキストは Send な FnMut を保持する。C のセッション API の
 // 契約により、コールバックは直列に呼ばれ、stop は実行中コールバックの完了を
-// 待つため、コールバックへの参照が同時に複数スレッドから使われることはない。
+// 待つため、借用が同時に複数スレッドから使われることはない。
 unsafe impl Send for FfiCaptureImpl {}
 
 // ---------------------------------------------------------------------------
@@ -219,7 +230,11 @@ extern "C" fn frame_callback(
         timestamp_us,
     };
 
-    (context.callback)(frame);
+    // コールバックはセッションごとに単一のバックエンドスレッドから直列に呼ばれ、
+    // stop は実行中コールバックの完了を待つ。そのため、この借用が別スレッドと
+    // 競合することはない。
+    let mut callback = context.callback.borrow_mut();
+    callback(frame);
 }
 
 // ---------------------------------------------------------------------------

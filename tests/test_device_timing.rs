@@ -12,8 +12,6 @@
     enable_default_wasapi
 ))]
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -141,8 +139,7 @@ fn playback_callbacks_track_audio_time() {
     // チャネルを使う
     let (sender, receiver) = mpsc::channel();
     // コールバックをまたいでサイン波の位相を継続させるための生成済みフレーム数
-    let phase_frames = Arc::new(AtomicU64::new(0));
-    let callback_phase_frames = Arc::clone(&phase_frames);
+    let mut phase_frames = 0u64;
     let mut playback = AudioPlayback::new(
         AudioPlaybackConfig::default(),
         move |frames, channels, sample_rate| {
@@ -152,7 +149,7 @@ fn playback_callbacks_track_audio_time() {
                 channels,
                 sample_rate,
             });
-            generate_signal(frames, channels, sample_rate, &callback_phase_frames)
+            generate_signal(frames, channels, sample_rate, &mut phase_frames)
         },
     )
     .unwrap_or_else(|error| panic!("デフォルト出力デバイスの再生を作成できません: {error}"));
@@ -330,14 +327,15 @@ fn generate_signal(
     frames: i32,
     channels: i32,
     sample_rate: i32,
-    phase_frames: &AtomicU64,
+    phase_frames: &mut u64,
 ) -> Option<PlaybackFrame> {
     if frames <= 0 || channels <= 0 || sample_rate <= 0 {
         return None;
     }
 
     // このコールバックが担当する区間の先頭フレーム番号を確保する
-    let start_frame = phase_frames.fetch_add(frames as u64, Ordering::Relaxed);
+    let start_frame = *phase_frames;
+    *phase_frames += frames as u64;
     let mut samples = Vec::new();
     for frame in 0..frames as u64 {
         let index = start_frame + frame;

@@ -1,5 +1,6 @@
 //! Windows 用オーディオ再生 (WASAPI)
 
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -16,15 +17,19 @@ use crate::common::{
 use crate::device_wasapi::{ComGuard, SendHandle, SendPtr, build_wave_format, get_device_by_id};
 use crate::error::{Error, Result};
 
+/// 再生のユーザーコールバック。
+type PlaybackCallback = Box<dyn FnMut(i32, i32, i32) -> Option<PlaybackFrame> + Send>;
+
 struct PlaybackContext {
-    callback: Box<dyn Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send>,
+    // コールバックは `&mut` を要求するが、再生スレッドには `PlaybackContext` の
+    // 共有参照として渡すため、内側だけを `RefCell` で可変にする。
+    callback: RefCell<PlaybackCallback>,
 }
 
 // SAFETY: PlaybackContext は WasapiPlaybackImpl の Box に保持され、再生スレッドの
 // 実行中は drop されない。stop はスレッドを join してから戻るため、スレッドは
-// join 後にコンテキストへアクセスしない。コールバックは再生スレッドからのみ
-// 直列に呼ばれ、その実行中に WasapiPlaybackImpl 側が context へアクセスすることも
-// ない。
+// join 後にコンテキストへアクセスしない。コールバックの借用は再生スレッドだけが
+// 直列に作る。
 unsafe impl Send for SendPtr<*const PlaybackContext> {}
 
 struct SessionData {
@@ -62,7 +67,7 @@ impl WasapiPlaybackImpl {
     /// データがない場合は `None` を返すと無音が再生される。
     pub fn new<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
+        F: FnMut(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
     {
         // デバイスを取得（再生なので出力デバイス）
         let device = get_device_by_id(config.device_id.as_deref(), AudioDeviceType::Output)?;
@@ -125,8 +130,9 @@ impl WasapiPlaybackImpl {
                 Error::SessionCreateFailed
             })?;
 
+            let callback: PlaybackCallback = Box::new(callback);
             let context = Box::new(PlaybackContext {
-                callback: Box::new(callback),
+                callback: RefCell::new(callback),
             });
 
             Ok(Self {
@@ -314,8 +320,12 @@ fn playback_thread_func(
             Err(_) => continue,
         };
 
+        // コールバックはこのスレッドからのみ直列に呼ばれ、その実行中に
+        // WasapiPlaybackImpl 側が callback へアクセスすることもない。
+        let mut callback = context.callback.borrow_mut();
+
         // ユーザーコールバックからフレームデータを取得する
-        let frame_opt = (context.callback)(frames_available as i32, channels, sample_rate);
+        let frame_opt = callback(frames_available as i32, channels, sample_rate);
 
         if let Some(frame) = frame_opt {
             // フレームデータをバッファに変換して書き込む

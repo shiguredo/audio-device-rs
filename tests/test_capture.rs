@@ -10,6 +10,7 @@
 ))]
 
 use std::cell::Cell;
+use std::collections::VecDeque;
 
 use shiguredo_audio_device::{AudioCapture, AudioCaptureConfig, Error, initialize_thread};
 
@@ -46,5 +47,25 @@ fn accepts_callback_capturing_cell() {
     // 境界のコンパイル可否だけを確認するため、結果の種別は問わない
     let _ = AudioCapture::new(AudioCaptureConfig::default(), move |_| {
         calls.set(calls.get() + 1);
+    });
+}
+
+/// デフォルトバックエンドのキャプチャが、`FnMut` のコールバック内で直接更新する
+/// 状態を捕捉したコールバックを受け付けること。
+///
+/// このテストの目的は実行時の動作ではなく、`Cell` / `RefCell` / `Atomic` などを
+/// 使わずに `u64` や `VecDeque` をコールバック内で更新できることのコンパイル
+/// 確認である。デバイスが無い環境では `new` がエラーを返すため、`Ok` / `Err` の
+/// どちらでもテストを成功させる。
+#[test]
+fn accepts_callback_mutating_captured_state() {
+    let _guard = initialize_thread().expect("テストスレッドを初期化できること");
+    let mut received_frames = 0u64;
+    let mut recent_frames = VecDeque::new();
+
+    // 境界のコンパイル可否だけを確認するため、結果の種別は問わない
+    let _ = AudioCapture::new(AudioCaptureConfig::default(), move |frame| {
+        received_frames += frame.frames as u64;
+        recent_frames.push_back(received_frames);
     });
 }
