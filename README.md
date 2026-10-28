@@ -195,6 +195,8 @@ Windows では `sample_rate` と `channels` で指定した S16 のストリー�
 ### 再生
 
 ```rust
+use std::f64::consts::PI;
+
 use shiguredo_audio_device::{AudioPlayback, AudioPlaybackConfig, PlaybackFrame};
 
 let _guard = shiguredo_audio_device::initialize_thread()?;
@@ -206,10 +208,20 @@ let config = AudioPlaybackConfig {
 };
 
 // コールバックは (要求フレーム数, チャンネル数, サンプルレート) を受け取り、
-// PlaybackFrame を返す。None を返すと無音になる
-let mut playback = AudioPlayback::new(config, |frames, channels, sample_rate| {
+// PlaybackFrame を返す。None を返すと無音になる。
+let mut position = 0u64;
+let mut playback = AudioPlayback::new(config, move |frames, channels, sample_rate| {
     let total = (frames * channels) as usize;
-    let samples = vec![0i16; total]; // ここで PCM を生成する
+    let mut samples = vec![0i16; total];
+    // position の位置からのサイン波を frame 数分だけ生成する
+    for index in 0..frames as usize {
+        let t = (position + index as u64) as f64 / sample_rate as f64;
+        let value = (2.0 * PI * 440.0 * t).sin() * 0.5 * f64::from(i16::MAX);
+        for channel in 0..channels as usize {
+            samples[index * channels as usize + channel] = value as i16;
+        }
+    }
+    position += frames as u64;
     PlaybackFrame::from_s16(&samples, channels, sample_rate).ok()
 })?;
 

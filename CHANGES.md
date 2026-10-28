@@ -31,6 +31,10 @@
   - コールバックはそのスレッド上で実行するため、`Send` と `'static` は引き続き要求する
   - `Cell` / `RefCell` / `mpsc::Receiver` などの `Send + !Sync` な状態を捕捉できる
   - @melpon
+- [UPDATE] キャプチャ・再生のコールバックに要求するトレイト境界を `Fn` から `FnMut` に変更する
+  - コールバックは呼び出しをまたいで状態を保持し、`Cell` / `RefCell` / `Atomic` などを使わずに更新できる
+  - `Fn` クロージャは `FnMut` を満たすため、既存の呼び出し側は変更不要である
+  - @melpon
 - [FIX] `Cargo.toml` の `windows` 依存を MSRV 1.93 の cargo が解釈できる形式に修正する
   - @voluntas
 - [FIX] examples が `--no-default-features` でビルドできない問題を修正する

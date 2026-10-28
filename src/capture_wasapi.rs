@@ -1,5 +1,6 @@
 //! Windows 用オーディオキャプチャ (WASAPI)
 
+use std::cell::RefCell;
 use std::ptr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,15 +15,20 @@ use crate::common::{AudioCaptureConfig, AudioDeviceType, AudioFormat, AudioFrame
 use crate::device_wasapi::{ComGuard, SendHandle, SendPtr, build_wave_format, get_device_by_id};
 use crate::error::{Error, Result};
 
+/// キャプチャのユーザーコールバック。
+type CaptureCallback = Box<dyn FnMut(AudioFrame<'_>) + Send>;
+
 struct WasapiCaptureContext {
-    callback: Box<dyn Fn(AudioFrame<'_>) + Send>,
+    // コールバックは `&mut` を要求するが、キャプチャスレッドには
+    // `WasapiCaptureContext` の共有参照として渡すため、内側だけを `RefCell`
+    // で可変にする。
+    callback: RefCell<CaptureCallback>,
 }
 
 // SAFETY: WasapiCaptureContext は WasapiCaptureImpl の Box に保持され、キャプチャ
 // スレッドの実行中は drop されない。stop はスレッドを join してから戻るため、
-// スレッドは join 後にコンテキストへアクセスしない。コールバックはキャプチャ
-// スレッドからのみ直列に呼ばれ、その実行中に WasapiCaptureImpl 側が context へ
-// アクセスすることもない。
+// スレッドは join 後にコンテキストへアクセスしない。コールバックの借用は
+// キャプチャスレッドだけが直列に作る。
 unsafe impl Send for SendPtr<*const WasapiCaptureContext> {}
 
 struct SessionData {
@@ -53,7 +59,7 @@ pub(crate) struct WasapiCaptureImpl {
 impl WasapiCaptureImpl {
     pub fn new<F>(config: AudioCaptureConfig, callback: F) -> Result<Self>
     where
-        F: Fn(AudioFrame<'_>) + Send + 'static,
+        F: FnMut(AudioFrame<'_>) + Send + 'static,
     {
         // デバイスを取得（キャプチャなので入力デバイス）
         let device = get_device_by_id(config.device_id.as_deref(), AudioDeviceType::Input)?;
@@ -112,8 +118,9 @@ impl WasapiCaptureImpl {
                 Error::SessionCreateFailed
             })?;
 
+            let callback: CaptureCallback = Box::new(callback);
             let context = Box::new(WasapiCaptureContext {
-                callback: Box::new(callback),
+                callback: RefCell::new(callback),
             });
 
             Ok(Self {
@@ -373,7 +380,10 @@ fn capture_thread_func(
                         format,
                         timestamp_us,
                     };
-                    (context.callback)(frame);
+                    // コールバックはこのスレッドからのみ直列に呼ばれ、その実行中に
+                    // WasapiCaptureImpl 側が callback へアクセスすることもない。
+                    let mut callback = context.callback.borrow_mut();
+                    callback(frame);
                 }
                 let _ = capture_client.ReleaseBuffer(frames_available);
             }

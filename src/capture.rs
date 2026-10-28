@@ -44,9 +44,10 @@ impl AudioCapture {
     /// `config.sample_rate` と `config.channels` が 0 以下の値は、それぞれ
     /// 48000 Hz、1 ch として扱う。
     ///
-    /// `callback` には `Fn(AudioFrame<'_>) + Send + 'static` を要求する。
+    /// `callback` には `FnMut(AudioFrame<'_>) + Send + 'static` を要求する。
     /// `callback` はキャプチャ開始後、キャプチャしたフレームごとに、バックエンドが
-    /// 管理するスレッド上で直列に呼ばれる。
+    /// 管理するスレッド上で直列に呼ばれる。呼び出しが直列であるため、`callback` は
+    /// `Cell` / `RefCell` / `Atomic` などを使わずに状態を保持して更新できる。
     #[cfg(any(
         enable_default_coreaudio,
         enable_default_pulse,
@@ -55,7 +56,7 @@ impl AudioCapture {
     ))]
     pub fn new<F>(config: AudioCaptureConfig, callback: F) -> Result<Self>
     where
-        F: Fn(AudioFrame<'_>) + Send + 'static,
+        F: FnMut(AudioFrame<'_>) + Send + 'static,
     {
         #[cfg(enable_default_coreaudio)]
         {
@@ -80,12 +81,10 @@ impl AudioCapture {
     // -----------------------------------------------------------------------
 
     /// CoreAudio でキャプチャを構築する。
-    ///
-    /// `callback` はバックエンドが管理するスレッド上で直列に呼ばれる。
     #[cfg(enable_coreaudio)]
     pub fn new_coreaudio<F>(config: AudioCaptureConfig, callback: F) -> Result<Self>
     where
-        F: Fn(AudioFrame<'_>) + Send + 'static,
+        F: FnMut(AudioFrame<'_>) + Send + 'static,
     {
         Ok(Self(AudioCaptureInner::Ffi(FfiCaptureImpl::new_coreaudio(
             config, callback,
@@ -97,12 +96,10 @@ impl AudioCapture {
     // -----------------------------------------------------------------------
 
     /// PulseAudio でキャプチャを構築する。
-    ///
-    /// `callback` はバックエンドが管理するスレッド上で直列に呼ばれる。
     #[cfg(enable_pulse)]
     pub fn new_pulse<F>(config: AudioCaptureConfig, callback: F) -> Result<Self>
     where
-        F: Fn(AudioFrame<'_>) + Send + 'static,
+        F: FnMut(AudioFrame<'_>) + Send + 'static,
     {
         Ok(Self(AudioCaptureInner::Ffi(FfiCaptureImpl::new_pulse(
             config, callback,
@@ -114,12 +111,10 @@ impl AudioCapture {
     // -----------------------------------------------------------------------
 
     /// PipeWire でキャプチャを構築する。
-    ///
-    /// `callback` はバックエンドが管理するスレッド上で直列に呼ばれる。
     #[cfg(enable_pipewire)]
     pub fn new_pipewire<F>(config: AudioCaptureConfig, callback: F) -> Result<Self>
     where
-        F: Fn(AudioFrame<'_>) + Send + 'static,
+        F: FnMut(AudioFrame<'_>) + Send + 'static,
     {
         Ok(Self(AudioCaptureInner::Ffi(FfiCaptureImpl::new_pipewire(
             config, callback,
@@ -131,12 +126,10 @@ impl AudioCapture {
     // -----------------------------------------------------------------------
 
     /// WASAPI でキャプチャを構築する。
-    ///
-    /// `callback` はバックエンドが管理するスレッド上で直列に呼ばれる。
     #[cfg(enable_wasapi)]
     pub fn new_wasapi<F>(config: AudioCaptureConfig, callback: F) -> Result<Self>
     where
-        F: Fn(AudioFrame<'_>) + Send + 'static,
+        F: FnMut(AudioFrame<'_>) + Send + 'static,
     {
         Ok(Self(AudioCaptureInner::Wasapi(WasapiCaptureImpl::new(
             config, callback,

@@ -3,6 +3,7 @@
 //! バックエンドごとに FFI 関数群を [PlaybackOps] で渡し、[FfiPlaybackImpl] が
 //! 再生の実装を一括で提供する。
 
+use std::cell::RefCell;
 use std::ffi::{CString, c_char, c_void};
 use std::ptr::NonNull;
 
@@ -38,8 +39,13 @@ struct PlaybackOps {
 // コールバックコンテキスト
 // ---------------------------------------------------------------------------
 
+/// 再生のユーザーコールバック。
+type PlaybackCallback = Box<dyn FnMut(i32, i32, i32) -> Option<PlaybackFrame> + Send>;
+
 pub(crate) struct PlaybackContext {
-    callback: Box<dyn Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send>,
+    // コールバックは `&mut` を要求するが、C 側には `PlaybackContext` の共有参照
+    // として渡すため、内側だけを `RefCell` で可変にする。
+    callback: RefCell<PlaybackCallback>,
 }
 
 // ---------------------------------------------------------------------------
@@ -67,7 +73,7 @@ impl FfiPlaybackImpl {
     fn new(
         ops: &'static PlaybackOps,
         config: AudioPlaybackConfig,
-        callback: impl Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
+        callback: impl FnMut(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
     ) -> Result<Self> {
         // デバイス ID は C 側で C 文字列として扱われるため、内部に NUL バイトを
         // 含む場合は C 側へ渡す前に拒否する。
@@ -88,8 +94,9 @@ impl FfiPlaybackImpl {
         let actual_sample_rate = unsafe { (ops.session_sample_rate)(session.as_ptr()) };
         let actual_channels = unsafe { (ops.session_channels)(session.as_ptr()) };
 
+        let callback: PlaybackCallback = Box::new(callback);
         let context = Box::new(PlaybackContext {
-            callback: Box::new(callback),
+            callback: RefCell::new(callback),
         });
 
         Ok(Self {
@@ -106,7 +113,7 @@ impl FfiPlaybackImpl {
     #[cfg(enable_coreaudio)]
     pub(crate) fn new_coreaudio<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
+        F: FnMut(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
     {
         Self::new(&OPS_COREAUDIO, config, callback)
     }
@@ -114,7 +121,7 @@ impl FfiPlaybackImpl {
     #[cfg(enable_pulse)]
     pub(crate) fn new_pulse<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
+        F: FnMut(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
     {
         Self::new(&OPS_PULSE, config, callback)
     }
@@ -122,19 +129,20 @@ impl FfiPlaybackImpl {
     #[cfg(enable_pipewire)]
     pub(crate) fn new_pipewire<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
+        F: FnMut(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
     {
         Self::new(&OPS_PIPEWIRE, config, callback)
     }
 
     pub fn start(&mut self) -> Result<()> {
         let session = self.session.ok_or(Error::SessionStartFailed)?;
-        let context = &mut *self.context;
 
         // 再生用コールバックコンテキストのポインタを C 側に渡す。
         // FfiPlaybackImpl の生存期間中は Box<PlaybackContext> が有効であるため、
         // C 側からのコールバックは安全に参照できる。
-        let context_ptr = context as *mut PlaybackContext as *mut c_void;
+        let context_ptr = std::ptr::from_ref(&*self.context)
+            .cast_mut()
+            .cast::<c_void>();
 
         let ret = unsafe {
             (self.ops.session_start)(session.as_ptr(), Some(playback_callback), context_ptr)
@@ -182,9 +190,9 @@ impl Drop for FfiPlaybackImpl {
 }
 
 // SAFETY: FfiPlaybackImpl は C のセッション API をスレッド間で移動して使用できる。
-// コールバックコンテキストは Send な Fn だけを保持する。C のセッション API の
+// コールバックコンテキストは Send な FnMut を保持する。C のセッション API の
 // 契約により、コールバックは直列に呼ばれ、stop は実行中コールバックの完了を
-// 待つため、コールバックへの参照が同時に複数スレッドから使われることはない。
+// 待つため、借用が同時に複数スレッドから使われることはない。
 unsafe impl Send for FfiPlaybackImpl {}
 
 // ---------------------------------------------------------------------------
@@ -221,8 +229,13 @@ extern "C" fn playback_callback(
         return 0;
     };
 
+    // コールバックはセッションごとに単一のバックエンドスレッドから直列に呼ばれ、
+    // stop は実行中コールバックの完了を待つ。そのため、この借用が別スレッドと
+    // 競合することはない。
+    let mut callback = context.callback.borrow_mut();
+
     // ユーザーコールバックからフレームデータを取得する
-    let Some(frame) = (context.callback)(frames, channels, sample_rate) else {
+    let Some(frame) = callback(frames, channels, sample_rate) else {
         return 0;
     };
 
@@ -277,10 +290,11 @@ mod tests {
 
     /// テスト用の PlaybackContext を作成する
     fn make_context(
-        cb: impl Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
+        cb: impl FnMut(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
     ) -> Box<PlaybackContext> {
+        let callback: PlaybackCallback = Box::new(cb);
         Box::new(PlaybackContext {
-            callback: Box::new(cb),
+            callback: RefCell::new(callback),
         })
     }
 
