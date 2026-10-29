@@ -1,7 +1,7 @@
 # コールバックの必須境界から Sync を削除する
 
 - Created: 2026-10-27
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-29
 - Branch: feature/update-remove-callback-sync
 - Polished: {YYYY-MM-DD}
 
@@ -107,3 +107,14 @@ video-device-rs では既にコールバックから `Sync` を外している�
 - video-device-rs の commit `45e83a0` で `JoinHandle<VideoFrameCallback>` による回収を追加した
 
 これらの実装は、コールバックを複数スレッドで共有しないことを前提にしている。audio-device-rs でも同じ前提を `audio.h` と safety コメントで明文化する。
+
+## 解決方法
+
+- `AudioCapture::new` / `AudioPlayback::new` と各バックエンドのコンストラクタからコールバックの `Sync` 要求を削除し、`Send` のみを要求するようにした
+- `CaptureContext` / `PlaybackContext` のコールバックの trait object から `Sync` を削除した
+- WASAPI のコンテキストから `running` を分離し、`Box` のコンテキストと `Arc<AtomicBool>` の実行状態をスレッドで共有する構造に変更した
+- `audio.h` と safety コメントに、コールバックがバックエンドの管理するスレッド上で直列に呼ばれることを明記した
+- `tests/test_capture.rs` / `tests/test_playback.rs` に、`Cell` を捕捉したコールバックをデフォルトバックエンドへ渡すテストを追加した
+- WASAPI でも NUL バイトを含むデバイス ID を `Error::InvalidDeviceId` として拒否するようにした
+- `CHANGES.md` にコールバック境界の変更を [UPDATE] として記載した
+- PR #23 で `develop` にマージされた
