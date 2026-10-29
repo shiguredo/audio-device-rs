@@ -104,6 +104,9 @@
   - @melpon
 - [ADD] `write_playback_frame_to_buffer` の直接テストを追加する
   - @voluntas
+- [UPDATE] 実機の再生タイミングテストを全測定点の回帰で検証し、入出力の同時実行を避ける
+  - 境界の 1 回のスケジューリング遅延に影響されず、50 ms 相当の許容値を維持する
+  - @melpon
 - [UPDATE] PulseAudio のセッション開始はサーバが応答しない場合に無期限にブロックすることをドキュメントに記載する
   - @melpon
 - [UPDATE] PBT をプロパティベーステストフレームワーク noprop に移行する
