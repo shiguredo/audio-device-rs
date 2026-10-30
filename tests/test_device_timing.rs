@@ -12,7 +12,7 @@
     enable_default_wasapi
 ))]
 
-use std::sync::mpsc;
+use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use shiguredo_audio_device::{
@@ -35,16 +35,30 @@ const CAPTURE_TIMESTAMP_TOLERANCE_US: i64 = 1_000;
 /// タイムスタンプを検証するために必要な最低組数。
 const MIN_VERIFIED_CAPTURE_PAIRS: usize = 2;
 
-/// 再生コールバックの要求フレーム数と経過時間に許す誤差。
+/// 推定レートの平均誤差に許す、測定区間長に対する時間。
 ///
-/// コールバックの周期や OS のスケジューリングによるずれを許容する。
+/// 推定レートとサンプルレートの差に測定区間の経過時間を掛けると、要求フレーム数の
+/// 差に換算できる。この差の絶対値が 50 ms に相当するフレーム数以下であることを
+/// 検証する。
 const PLAYBACK_TIMING_TOLERANCE: Duration = Duration::from_millis(50);
+
+/// 再生レートの推定に必要な最短測定区間。
+const MIN_PLAYBACK_MEASUREMENT: Duration = Duration::from_millis(1_800);
+
+/// 再生レートの推定に必要な最低測定点数。
+const MIN_PLAYBACK_MEASUREMENT_POINTS: usize = 10;
 
 /// 再生するサイン波の周波数 (Hz)。
 const SIGNAL_FREQUENCY_HZ: f64 = 440.0;
 
 /// 再生するサイン波の振幅 (フルスケールに対する比率)。
 const SIGNAL_AMPLITUDE: f64 = 0.1;
+
+// 入出力を同時に動かすとコールバックのスレッドがスケジューリング遅延の影響を
+// 受けやすくなるため、このファイルの 2 つのテストを直列化する。共有データの
+// 保護ではない。
+/// 実機デバイスを使うテストを直列化するロック。
+static DEVICE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 /// 再生コールバック 1 回分の記録。
 #[derive(Debug, Clone, Copy)]
@@ -90,6 +104,9 @@ fn enumerate_output_devices() -> Option<AudioDeviceList> {
 /// デフォルト入力デバイスで、キャプチャしたフレームのタイムスタンプが音声時間と一致すること。
 #[test]
 fn capture_timestamps_track_audio_time() {
+    let _test_guard = DEVICE_TEST_LOCK
+        .lock()
+        .expect("デバイスを使うテストを直列化するロックを取得できること");
     let _guard = initialize_thread().expect("テストスレッドを初期化できること");
 
     let Some(input_devices) = enumerate_input_devices() else {
@@ -126,6 +143,9 @@ fn capture_timestamps_track_audio_time() {
 /// デフォルト出力デバイスで、再生コールバックが呼ばれて要求フレーム数が経過時間に追従すること。
 #[test]
 fn playback_callbacks_track_audio_time() {
+    let _test_guard = DEVICE_TEST_LOCK
+        .lock()
+        .expect("デバイスを使うテストを直列化するロックを取得できること");
     let _guard = initialize_thread().expect("テストスレッドを初期化できること");
 
     let Some(output_devices) = enumerate_output_devices() else {
@@ -223,7 +243,8 @@ fn verify_capture_timestamps(device_name: &str, frames: &[AudioFrameOwned]) {
     eprintln!("{device_name}: {verified_pairs} 組のタイムスタンプを検証しました");
 }
 
-/// 再生コールバックの回数と要求フレーム数が、経過時間に追従していることを検証する。
+/// 再生コールバックの要求フレーム数が、経過時間に比例した一定のレートで
+/// 増えていることを検証する。
 fn verify_playback_calls(device_name: &str, calls: &[PlaybackCall]) {
     assert!(
         !calls.is_empty(),
@@ -239,7 +260,13 @@ fn verify_playback_calls(device_name: &str, calls: &[PlaybackCall]) {
         first.sample_rate
     );
 
+    // 再生開始直後の過渡状態を除外するため、最初のコールバックから一定時間経過した
+    // 後のコールバックだけを対象にする。定常状態では累積要求フレーム数が経過時間に
+    // 対して一定の傾きで増える。
+    let measurement_start = first.at + PLAYBACK_WARMUP;
+
     let mut cumulative_frames = 0i64;
+    let mut points = Vec::new();
     for call in calls {
         assert!(
             call.frames > 0,
@@ -254,68 +281,124 @@ fn verify_playback_calls(device_name: &str, calls: &[PlaybackCall]) {
             call.sample_rate, first.sample_rate,
             "{device_name} のコールバックでサンプルレートが変化しました"
         );
-        cumulative_frames += call.frames as i64;
+        cumulative_frames += i64::from(call.frames);
+        if call.at >= measurement_start {
+            points.push(((call.at - first.at).as_secs_f64(), cumulative_frames as f64));
+        }
     }
     assert!(
         cumulative_frames > 0,
         "{device_name} の要求フレーム数の累積が増えませんでした"
     );
-
-    // 再生開始直後の過渡状態を除外するため、最初のコールバックから一定時間経過した
-    // 後のコールバックだけを対象にする。定常状態では要求フレーム数の増分が経過時間と
-    // 一致する。
-    let measurement_start = first.at + PLAYBACK_WARMUP;
-    let measured_calls: Vec<&PlaybackCall> = calls
-        .iter()
-        .filter(|call| call.at >= measurement_start)
-        .collect();
     assert!(
-        measured_calls.len() >= 2,
+        points.len() >= 2,
         "{device_name} の測定区間に再生コールバックが 2 回以上ありません: {} 回",
-        measured_calls.len()
+        points.len()
     );
 
-    let start = measured_calls
+    let (first_seconds, first_frames) = points
         .first()
-        .expect("測定区間の先頭のコールバックがあること");
-    let end = measured_calls
+        .copied()
+        .expect("測定区間の先頭の測定点があること");
+    let (last_seconds, last_frames) = points
         .last()
-        .expect("測定区間の末尾のコールバックがあること");
-    let elapsed = end.at.duration_since(start.at);
+        .copied()
+        .expect("測定区間の末尾の測定点があること");
+    let elapsed = last_seconds - first_seconds;
     assert!(
-        elapsed > Duration::ZERO,
-        "{device_name} の測定区間の経過時間が 0 です"
+        is_measurement_sufficient(elapsed, points.len()),
+        "{device_name} の測定区間が再生レートの推定に不足しています: {:.3} 秒, {} 点 (最低 {:.1} 秒, {} 点)",
+        elapsed,
+        points.len(),
+        MIN_PLAYBACK_MEASUREMENT.as_secs_f64(),
+        MIN_PLAYBACK_MEASUREMENT_POINTS
     );
 
-    // 測定区間の末尾で要求したフレームは、その時点ではまだ再生が完了していないため、
-    // 経過時間と比較するフレーム数には含めない。これにより、測定区間中に再生された
-    // フレーム数と経過時間を比較できる。
-    let requested_frames: i64 = measured_calls
-        .iter()
-        .take(measured_calls.len() - 1)
-        .map(|call| call.frames as i64)
-        .sum();
-    let expected_frames = elapsed.as_secs_f64() * first.sample_rate as f64;
-    let tolerance_frames = PLAYBACK_TIMING_TOLERANCE.as_secs_f64() * first.sample_rate as f64;
-    let difference_frames = requested_frames as f64 - expected_frames;
+    // 定常状態では累積要求フレーム数が経過時間に比例する。単発のスケジューリング
+    // 遅延の位置に依存しないよう、すべての測定点のペアごとの傾きの中央値を使う。
+    let estimated_rate = estimate_frame_rate(&points)
+        .expect("測定点が 2 点以上あり、時刻が異なるためレートを推定できること");
 
+    let sample_rate = f64::from(first.sample_rate);
+    let tolerance_frames = rate_tolerance_frames(sample_rate);
+    let difference_frames = rate_error_frames(estimated_rate, sample_rate, elapsed);
     assert!(
-        difference_frames.abs() <= tolerance_frames,
-        "{device_name} の要求フレーム数が経過時間に追従していません: 経過 {:.3} 秒, 要求 {} フレーム, 期待 {:.0} フレーム, 差 {:.0} フレーム, 許容 {:.0} フレーム",
-        elapsed.as_secs_f64(),
-        requested_frames,
-        expected_frames,
+        is_rate_within_tolerance(estimated_rate, sample_rate, elapsed),
+        "{device_name} の推定した再生フレームレートが期待値から外れています: 推定 {:.1} fps, 期待 {:.1} fps, 測定区間 {:.3} 秒, 差 {:.0} フレーム, 許容 {:.0} フレーム (測定点 {} 点)",
+        estimated_rate,
+        sample_rate,
+        elapsed,
         difference_frames,
-        tolerance_frames
+        tolerance_frames,
+        points.len()
     );
 
+    let measured_frames = last_frames - first_frames;
+    let expected_frames = elapsed * sample_rate;
     eprintln!(
-        "{device_name}: {} 回のコールバックで {} フレームを要求し、{:.3} 秒の経過に対する期待値との差は {:.0} フレームでした",
+        "{device_name}: {} 回のコールバックのうち {} 点からレートを推定し、推定 {:.1} fps (期待 {:.1} fps)、{:.3} 秒の測定区間で要求 {:.0} フレーム (期待 {:.0} フレーム)、差 {:.0} フレームでした",
         calls.len(),
-        cumulative_frames,
-        elapsed.as_secs_f64(),
+        points.len(),
+        estimated_rate,
+        sample_rate,
+        elapsed,
+        measured_frames,
+        expected_frames,
         difference_frames
     );
+}
+
+/// 測定点のペアごとの傾きの中央値 (Theil-Sen 推定) を求める。
+///
+/// `points` は (経過秒, 累積要求フレーム数) の組の列である。傾きをフレームレート
+/// (フレーム/秒) として返す。2 点未満、または経過秒が等しい組しかない場合は
+/// `None` を返す。
+fn estimate_frame_rate(points: &[(f64, f64)]) -> Option<f64> {
+    // 測定点は再生時間とコールバック周期で決まり、高々数千点程度に収まるため、
+    // すべてのペアの傾きを求めて中央値を選ぶ
+    let mut slopes = Vec::new();
+    for (index, first) in points.iter().enumerate() {
+        for second in &points[index + 1..] {
+            let seconds = second.0 - first.0;
+            // 同じ時刻の測定点同士では傾きを決められない
+            if seconds > 0.0 {
+                slopes.push((second.1 - first.1) / seconds);
+            }
+        }
+    }
+    if slopes.is_empty() {
+        return None;
+    }
+
+    slopes.sort_by(f64::total_cmp);
+    let middle = slopes.len() / 2;
+    if slopes.len() % 2 == 0 {
+        Some((slopes[middle - 1] + slopes[middle]) / 2.0)
+    } else {
+        Some(slopes[middle])
+    }
+}
+
+/// 推定レートとサンプルレートの差を、測定区間全体の要求フレーム数の差に換算する。
+fn rate_error_frames(estimated_rate: f64, sample_rate: f64, elapsed: f64) -> f64 {
+    (estimated_rate - sample_rate) * elapsed
+}
+
+/// 許容されるレート誤差を、要求フレーム数の差に換算する。
+fn rate_tolerance_frames(sample_rate: f64) -> f64 {
+    PLAYBACK_TIMING_TOLERANCE.as_secs_f64() * sample_rate
+}
+
+/// 推定レートのずれが許容範囲に収まっているかを判定する。
+fn is_rate_within_tolerance(estimated_rate: f64, sample_rate: f64, elapsed: f64) -> bool {
+    rate_error_frames(estimated_rate, sample_rate, elapsed).abs()
+        <= rate_tolerance_frames(sample_rate)
+}
+
+/// 測定区間が再生レートの推定に足る長さと測定点数を持つかを判定する。
+fn is_measurement_sufficient(elapsed: f64, point_count: usize) -> bool {
+    elapsed >= MIN_PLAYBACK_MEASUREMENT.as_secs_f64()
+        && point_count >= MIN_PLAYBACK_MEASUREMENT_POINTS
 }
 
 /// 再生用の 440 Hz サイン波を生成する。
@@ -347,4 +430,147 @@ fn generate_signal(
     }
 
     PlaybackFrame::from_s16(&samples, channels, sample_rate).ok()
+}
+
+#[test]
+fn estimate_frame_rate_is_within_tolerance_with_single_delay() {
+    // 10 ms ごとに呼ばれ、48 kHz で一定のフレーム数を要求する 2 秒間の合成データを
+    // 作る。最後の測定点だけが 70 ms 遅れた状況を再現し、推定レートのずれが
+    // 許容値に収まることを確認する。
+    const SAMPLE_RATE: f64 = 48_000.0;
+    const CALL_INTERVAL_SECONDS: f64 = 0.01;
+    const CALL_COUNT: usize = 200;
+    const DELAY_SECONDS: f64 = 0.07;
+
+    let mut points = Vec::new();
+    let mut frames = 0.0;
+    for index in 0..CALL_COUNT {
+        let delayed = if index + 1 == CALL_COUNT {
+            DELAY_SECONDS
+        } else {
+            0.0
+        };
+        points.push((index as f64 * CALL_INTERVAL_SECONDS + delayed, frames));
+        frames += SAMPLE_RATE * CALL_INTERVAL_SECONDS;
+    }
+
+    let estimated_rate = estimate_frame_rate(&points)
+        .expect("測定点が 2 点以上あり、時刻が異なるためレートを推定できること");
+    let elapsed = points.last().expect("測定点が 1 点以上あること").0
+        - points.first().expect("測定点が 1 点以上あること").0;
+
+    assert!(
+        is_rate_within_tolerance(estimated_rate, SAMPLE_RATE, elapsed),
+        "末尾の 1 点が 70 ms 遅れただけでレート推定が許容値を超えました: 推定 {estimated_rate:.1} fps, 差 {:.0} フレーム, 許容 {:.0} フレーム",
+        rate_error_frames(estimated_rate, SAMPLE_RATE, elapsed),
+        rate_tolerance_frames(SAMPLE_RATE)
+    );
+}
+
+#[test]
+fn estimate_frame_rate_is_within_tolerance_with_center_delay() {
+    // 10 ms ごとに呼ばれ、48 kHz で一定のフレーム数を要求する 2 秒間の合成データを
+    // 作る。測定区間の中央で 34 ms の時間損失が起き、以降の測定点が遅れた状況を
+    // 再現し、推定レートのずれが許容値に収まることを確認する。
+    const SAMPLE_RATE: f64 = 48_000.0;
+    const CALL_INTERVAL_SECONDS: f64 = 0.01;
+    const CALL_COUNT: usize = 200;
+    const CENTER_INDEX: usize = CALL_COUNT / 2;
+    const DELAY_SECONDS: f64 = 0.034;
+
+    let mut points = Vec::new();
+    let mut frames = 0.0;
+    for index in 0..CALL_COUNT {
+        let delayed = if index >= CENTER_INDEX {
+            DELAY_SECONDS
+        } else {
+            0.0
+        };
+        points.push((index as f64 * CALL_INTERVAL_SECONDS + delayed, frames));
+        frames += SAMPLE_RATE * CALL_INTERVAL_SECONDS;
+    }
+
+    let estimated_rate = estimate_frame_rate(&points)
+        .expect("測定点が 2 点以上あり、時刻が異なるためレートを推定できること");
+    let elapsed = points.last().expect("測定点が 1 点以上あること").0
+        - points.first().expect("測定点が 1 点以上あること").0;
+
+    assert!(
+        is_rate_within_tolerance(estimated_rate, SAMPLE_RATE, elapsed),
+        "中央の 34 ms の時間損失でレート推定が許容値を超えました: 推定 {estimated_rate:.1} fps, 差 {:.0} フレーム, 許容 {:.0} フレーム",
+        rate_error_frames(estimated_rate, SAMPLE_RATE, elapsed),
+        rate_tolerance_frames(SAMPLE_RATE)
+    );
+}
+
+#[test]
+fn estimate_frame_rate_detects_double_rate() {
+    // 10 ms ごとに 2 倍のフレーム数を要求する合成データを作る。持続的に 2 倍の
+    // レートを要求するため、推定レートのずれが許容値を超えることを確認する。
+    const SAMPLE_RATE: f64 = 48_000.0;
+    const CALL_INTERVAL_SECONDS: f64 = 0.01;
+    const CALL_COUNT: usize = 200;
+
+    let mut points = Vec::new();
+    let mut frames = 0.0;
+    for index in 0..CALL_COUNT {
+        points.push((index as f64 * CALL_INTERVAL_SECONDS, frames));
+        frames += 2.0 * SAMPLE_RATE * CALL_INTERVAL_SECONDS;
+    }
+
+    let estimated_rate = estimate_frame_rate(&points)
+        .expect("測定点が 2 点以上あり、時刻が異なるためレートを推定できること");
+    let elapsed = points.last().expect("測定点が 1 点以上あること").0
+        - points.first().expect("測定点が 1 点以上あること").0;
+
+    assert!(
+        !is_rate_within_tolerance(estimated_rate, SAMPLE_RATE, elapsed),
+        "2 倍のレートの合成データが許容値に収まりました: 推定 {estimated_rate:.1} fps, 差 {:.0} フレーム, 許容 {:.0} フレーム",
+        rate_error_frames(estimated_rate, SAMPLE_RATE, elapsed),
+        rate_tolerance_frames(SAMPLE_RATE)
+    );
+}
+
+#[test]
+fn estimate_frame_rate_returns_none_without_time_span() {
+    // 傾きを決めるには、時刻の異なる 2 点以上が必要になる。
+    assert_eq!(
+        estimate_frame_rate(&[]),
+        None,
+        "測定点が無い場合は推定できないこと"
+    );
+    assert_eq!(
+        estimate_frame_rate(&[(1.0, 0.0)]),
+        None,
+        "測定点が 1 点の場合は推定できないこと"
+    );
+    assert_eq!(
+        estimate_frame_rate(&[(1.0, 0.0), (1.0, 480.0)]),
+        None,
+        "測定点の時刻がすべて同じ場合は推定できないこと"
+    );
+}
+
+#[test]
+fn measurement_rejects_short_span_and_few_points() {
+    // 2 点では Theil-Sen 推定が端点 2 点の傾きに縮退し、短い測定区間では
+    // レート誤差の検出精度が落ちるため、長さと測定点数の両方を要求する。
+    assert!(
+        !is_measurement_sufficient(0.04, 2),
+        "40 ms・2 点の測定区間を十分と判定しました"
+    );
+    assert!(
+        !is_measurement_sufficient(1.7, MIN_PLAYBACK_MEASUREMENT_POINTS),
+        "1.7 秒・{} 点の測定区間を十分と判定しました",
+        MIN_PLAYBACK_MEASUREMENT_POINTS
+    );
+    assert!(
+        !is_measurement_sufficient(1.9, MIN_PLAYBACK_MEASUREMENT_POINTS - 1),
+        "測定点が少ない測定区間を十分と判定しました"
+    );
+    assert!(
+        is_measurement_sufficient(1.9, MIN_PLAYBACK_MEASUREMENT_POINTS),
+        "1.9 秒・{} 点の測定区間を不足と判定しました",
+        MIN_PLAYBACK_MEASUREMENT_POINTS
+    );
 }

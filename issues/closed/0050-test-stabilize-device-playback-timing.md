@@ -1,7 +1,7 @@
 # 実機の再生タイミングテストを安定させる
 
 - Created: 2026-10-27
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-30
 - Branch: feature/fix-macos-playback-timing-flake
 - Polished: {YYYY-MM-DD}
 
@@ -55,14 +55,15 @@ macOS のホステッドランナー上で入出力が同時に動くと、再�
 
 ## 設計方針
 
-### 全測定点を使った回帰
+### 全測定点を使ったロバスト推定
 
-最初と最後の 2 点ではなく、`PLAYBACK_WARMUP` 以降のすべての `(at, 累積要求フレーム数)` に対して最小二乗直線を当てはめ、傾きをフレームレートとして検証する。
+`PLAYBACK_WARMUP` 以降のすべての `(at, 累積要求フレーム数)` の組について傾きを求め、その中央値 (Theil-Sen 推定) をフレームレートとして検証する。
 
 - 許容値は 50 ms のまま変更しない
-- 2 秒間で 2.5% のレート誤差を検出する精度を維持する
-- 1 回のスケジューリング遅延が結果に与える影響を 1/N 程度に抑える
+- 2 秒間で 2.5% を超える平均レート誤差を検出する精度を維持する
+- 単発のスケジューリング遅延が結果に与える影響を、測定区間内の位置によらず抑える
 - 推定処理を純粋関数として切り出し、合成データで単体テストする
+- 2 点では端点 2 点の傾きに縮退するため、測定区間 1.8 秒以上、測定点 10 点以上を要求する
 
 ### タイミングテストの直列化
 
@@ -73,17 +74,19 @@ CI の macOS ジョブだけで `--test-threads=1` を指定する方法もあ�
 
 ## 完了条件
 
-- `playback_callbacks_track_audio_time` が端点 2 点ではなく、全測定点の回帰でフレームレートを検証すること
+- `playback_callbacks_track_audio_time` が端点 2 点ではなく、全測定点から推定したフレームレートで検証すること
 - `PLAYBACK_TIMING_TOLERANCE` を広げず、リトライも追加しないこと
+- 測定区間長と測定点数の下限を設けること
 - `capture_timestamps_track_audio_time` と `playback_callbacks_track_audio_time` が同時に実行されないこと
-- 回帰の推定関数に、単一の遅延を加えた合成データと、意図的に 2 倍のレートにした合成データの単体テストがあること
+- レート推定関数に、末尾と中央に遅延を加えた合成データ、意図的に 2 倍のレートにした合成データ、測定点数と測定区間長が不足する場合の単体テストがあること
 - macOS CI の `cargo test --workspace` が成功し、失敗ジョブの再実行でも再発しないこと
 - `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` が通ること
 
 ## テスト
 
-- 回帰の推定関数を直接呼び、一定レートに 1 点だけ大きな遅延を加えても許容範囲に収まることを確認する
-- 回帰の推定関数を直接呼び、2 倍のレートの合成データでは許容範囲を超えることを確認する
+- レート推定関数を直接呼び、一定レートの末尾または中央に遅延を加えても許容範囲に収まることを確認する
+- レート推定関数を直接呼び、2 倍のレートの合成データでは許容範囲を超えることを確認する
+- 測定区間長または測定点数が下限未満の場合は、再生レートの検証に不足すると判定することを確認する
 - macOS の実機で `playback_callbacks_track_audio_time` を実行し、50 ms の許容値で成功することを確認する
 - `capture_timestamps_track_audio_time` と同時に実行しても失敗しないことを確認する
 
@@ -92,3 +95,20 @@ CI の macOS ジョブだけで `--test-threads=1` を指定する方法もあ�
 - [CI (macOS) / run 40464045021](https://github.com/shiguredo/audio-device-rs/actions/runs/40464045021/job/122055098535)
 - PR #22
 - `Device Test (macOS)` の成功ログ
+
+## 解決方法
+
+- `tests/test_device_timing.rs` の再生レート検証を、端点 2 点の要求フレーム合計と経過時間の比較から、`PLAYBACK_WARMUP` 以降のすべての測定点のペアごとの傾きの中央値 (Theil-Sen 推定) に変更した
+  - 推定レートとサンプルレートの差に測定区間長を掛け、50 ms 相当のフレーム数以下であることを検証する
+  - 測定区間 1.8 秒以上、測定点 10 点以上を要求し、不足している場合は検証に足りないものとしてテストを失敗させる
+  - 判定式を `rate_error_frames` / `rate_tolerance_frames` / `is_rate_within_tolerance` に共通化した
+- `capture_timestamps_track_audio_time` と `playback_callbacks_track_audio_time` を `static Mutex<()>` で直列化し、入出力の同時実行によるコールバック遅延を避けるようにした
+- 単体テストを追加した
+  - 末尾 1 点が 70 ms 遅れた合成データで許容範囲に収まること
+  - 中央で 34 ms の時間損失が起きた合成データで許容範囲に収まること
+  - 2 倍のレートの合成データで許容範囲を超えること
+  - 測定点数または測定区間長が下限未満の場合は検証に不足すると判定すること
+- Linux の PipeWire 上に仮想の入出力デバイスを作り、PulseAudio 互換サーバ経由で `cargo test --workspace` を実行し、67 件すべて成功した
+- CPU を飽和させた状態では、旧方式が再生テストに失敗することを再現した。通常負荷では新しい方式の推定レートの差が -3〜+46 フレームに収まることを確認した。コールバック自体が持続的に遅れる過負荷では、持続的なレート誤差として失敗する
+- macOS CI はこの環境では実行しておらず、macOS 実機での成功は未確認である
+- `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings` は成功した
