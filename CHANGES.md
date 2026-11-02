@@ -26,6 +26,8 @@
   - `AudioCaptureSession::stop` / `AudioPlaybackSession::stop` は戻り値を持たない
   - Windows で `AudioCapture` と `AudioCaptureSession` が `Sync` でなくなる
   - @melpon
+- [CHANGE] MSRV (rust-version) を 1.95 に上げる
+  - @voluntas
 - [UPDATE] キャプチャ・再生のコールバックに要求するトレイト境界から `Sync` を削除する
   - コールバックはバックエンドが管理するスレッド上で直列に呼ばれるため、`Sync` は要求しない
   - コールバックはそのスレッド上で実行するため、`Send` と `'static` は引き続き要求する

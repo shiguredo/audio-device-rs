@@ -45,7 +45,7 @@ jobs:
       - uses: shiguredo/github-actions/.github/actions/rust-cache@main
         with:
           os: ${{ matrix.os }}
-          toolchain: "1.93"
+          toolchain: "1.95"
       - name: Install Linux dependencies (pulse)
         if: runner.os == 'Linux' && !contains(matrix.cargo-flags, 'pipewire')
         run: sudo apt-get update && sudo apt-get install -y libpulse-dev libclang-dev pulseaudio pulseaudio-utils
