@@ -3,7 +3,7 @@
 - Created: 2026-11-02
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-wasapi-playback-initialize-buffer-duration
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-11-03
 
 ## 目的
 
@@ -27,4 +27,4 @@ WASAPI 再生の `IAudioClient::Initialize` が共有モード + イベント駆
 - WASAPI 再生の `Initialize` が `hnsBufferDuration = 0` / `hnsPeriodicity = 0` で呼ばれる。
 - コメントが仕様と一致している。
 - Windows 実機の device-test で再生系テストが成功する。
-- `cargo fmt` / `cargo clippy --workspace --all-targets` が通る。
+- Windows で `cargo fmt --all -- --check` / `cargo clippy --workspace --all-targets -- -D warnings` が通る。
