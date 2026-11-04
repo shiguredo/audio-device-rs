@@ -3,7 +3,7 @@
 - Created: 2026-11-03
 - Completed: {YYYY-MM-DD}
 - Branch: feature/change-playback-frame-private-fields
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-11-04
 
 ## 目的
 
