@@ -1,8 +1,10 @@
 //! Windows 用オーディオデバイス列挙 (WASAPI)
 
+use std::marker::PhantomData;
+
 use windows::{
     Win32::Devices::FunctionDiscovery::*, Win32::Foundation::*, Win32::Media::Audio::*,
-    Win32::Media::KernelStreaming::*, Win32::Media::Multimedia::*, Win32::System::Com::*,
+    Win32::Media::Multimedia::WAVE_FORMAT_IEEE_FLOAT, Win32::System::Com::*,
     Win32::System::Variant::*, Win32::UI::Shell::PropertiesSystem::*, core::*,
 };
 
@@ -20,7 +22,7 @@ impl SendHandle {
 
 pub(crate) struct SendPtr<T>(pub(crate) T);
 
-// Safety: COM オブジェクトは MTA (COINIT_MULTITHREADED) で初期化しており、
+// COM オブジェクトは MTA (COINIT_MULTITHREADED) で初期化しており、
 // MTA オブジェクトはスレッド間で安全に移送できる。
 // 各具体型に対する unsafe impl Send は、利用側（capture_wasapi.rs, playback_wasapi.rs）で宣言する。
 impl<T> SendPtr<T> {
@@ -29,18 +31,55 @@ impl<T> SendPtr<T> {
     }
 }
 
-/// COM を MTA モードで初期化する。
-/// 既に MTA で初期化済み (S_FALSE) の場合は成功とする。
-/// 呼び出し元スレッドが STA で初期化済みの場合は RPC_E_CHANGED_MODE が返るため、
-/// エラーとして報告する。
-pub(crate) fn init_com_mta() -> Result<()> {
-    unsafe {
-        let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
-        if hr.is_ok() {
-            Ok(())
-        } else {
-            Err(Error::ComInitFailed)
+/// 呼び出し元スレッドの COM 初期化 (MTA への参加) に対応する RAII ガード。
+pub(crate) struct ComGuard {
+    /// このガードを `!Send` / `!Sync` にするためのマーカー。値は保持しない。
+    _not_send: PhantomData<*const ()>,
+}
+
+impl ComGuard {
+    /// COM を MTA モードで初期化し、初期化カウンタを解放するガードを返す。
+    ///
+    /// 既に MTA で初期化済み (S_FALSE) の場合も成功とし、その場合も `CoInitializeEx` が
+    /// カウンタを 1 増やすため、返されたガードを drop する必要がある。
+    /// 呼び出し元スレッドが STA で初期化済みの場合は RPC_E_CHANGED_MODE が返るため、
+    /// エラーとして報告する。
+    pub(crate) fn init_mta() -> Result<Self> {
+        // SAFETY: CoInitializeEx は成功時にスレッドの COM 初期化カウンタを 1 増やす。
+        // その解放は返したガードの drop で行う。
+        unsafe {
+            let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
+            if hr.is_ok() {
+                Ok(Self {
+                    _not_send: PhantomData,
+                })
+            } else {
+                Err(Error::ComInitFailed)
+            }
         }
+    }
+}
+
+impl Drop for ComGuard {
+    fn drop(&mut self) {
+        // SAFETY: このガードは CoInitializeEx が成功したときにだけ生成される。
+        // !Send なので生成したスレッド以外では drop されず、ここで呼ぶ CoUninitialize は
+        // 対応する CoInitializeEx と同じスレッドになる。
+        unsafe {
+            CoUninitialize();
+        }
+    }
+}
+
+/// COM の呼び出しエラーをクレートのエラーに変換する。
+///
+/// 呼び出し元スレッドが COM を初期化していない場合は、原因が分かるように
+/// `ComInitFailed` にする。
+fn map_com_error(error: &windows::core::Error, fallback: Error) -> Error {
+    if error.code() == CO_E_NOTINITIALIZED {
+        Error::ComInitFailed
+    } else {
+        fallback
     }
 }
 
@@ -92,12 +131,11 @@ impl WasapiDeviceListImpl {
 }
 
 fn enumerate_devices_by_type(device_type: AudioDeviceType) -> Result<Vec<WasapiDeviceImpl>> {
-    init_com_mta()?;
     unsafe {
         // デバイス列挙子を作成
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-                .map_err(|_| Error::DeviceAccessDenied)?;
+                .map_err(|e| map_com_error(&e, Error::DeviceAccessDenied))?;
 
         // デバイスタイプに応じてデータフローを選択
         let data_flow = match device_type {
@@ -178,39 +216,63 @@ fn get_device_format(device: &IMMDevice) -> Option<(i32, i32)> {
     }
 }
 
-/// オーディオフォーマットを判定
-pub(crate) unsafe fn determine_audio_format(wave_format: *const WAVEFORMATEX) -> AudioFormat {
-    let format_tag = unsafe { (*wave_format).wFormatTag };
-
-    // WAVE_FORMAT_IEEE_FLOAT の場合は F32 と判定する
-    if format_tag == WAVE_FORMAT_IEEE_FLOAT as u16 {
-        return AudioFormat::F32;
+/// 指定した形式・サンプルレート・チャンネル数の `WAVEFORMATEX` を構築する。
+///
+/// # エラー
+///
+/// - `sample_rate` または `channels` が 0 の場合
+/// - 1 サンプルフレームあたりのバイト数が `WAVEFORMATEX` の `u16` フィールドに収まらない場合
+/// - 1 秒あたりのバイト数が `WAVEFORMATEX` の `u32` フィールドに収まらない場合
+///
+/// はいずれも [`Error::InvalidAudioFormat`] を返す。
+pub(crate) fn build_wave_format(
+    format: AudioFormat,
+    sample_rate: u32,
+    channels: u16,
+) -> Result<WAVEFORMATEX> {
+    // サンプルレートとチャンネル数は音声形式として 1 以上が必要なので、0 は拒否する
+    if sample_rate == 0 || channels == 0 {
+        return Err(Error::InvalidAudioFormat);
     }
 
-    // WAVE_FORMAT_EXTENSIBLE の場合は SubFormat GUID を確認する
-    if format_tag == WAVE_FORMAT_EXTENSIBLE as u16 {
-        let ext = wave_format as *const WAVEFORMATEXTENSIBLE;
-        let sub_format = unsafe { std::ptr::addr_of!((*ext).SubFormat).read_unaligned() };
-        if sub_format == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
-            return AudioFormat::F32;
-        }
-    }
+    // 1 サンプルあたりのバイト数は形式ごとに決まる。乗算がオーバーフローしないよう
+    // u64 で計算してから各フィールドの型に変換する
+    let block_align = u64::from(channels) * format.bytes_per_sample() as u64;
+    let block_align = u16::try_from(block_align).map_err(|_| Error::InvalidAudioFormat)?;
+    let avg_bytes_per_sec = u64::from(sample_rate) * u64::from(block_align);
+    let avg_bytes_per_sec =
+        u32::try_from(avg_bytes_per_sec).map_err(|_| Error::InvalidAudioFormat)?;
+    let (format_tag, bits_per_sample) = match format {
+        AudioFormat::S16 => (WAVE_FORMAT_PCM as u16, 16),
+        AudioFormat::F32 => (WAVE_FORMAT_IEEE_FLOAT as u16, 32),
+    };
 
-    // それ以外は全て S16 として扱う
-    AudioFormat::S16
+    Ok(WAVEFORMATEX {
+        wFormatTag: format_tag,
+        nChannels: channels,
+        nSamplesPerSec: sample_rate,
+        nAvgBytesPerSec: avg_bytes_per_sec,
+        nBlockAlign: block_align,
+        wBitsPerSample: bits_per_sample,
+        cbSize: 0,
+    })
 }
 
-/// デバイス ID からデバイスを取得
+/// デバイス ID からデバイスを取得する。
 pub(crate) fn get_device_by_id(
     device_id: Option<&str>,
     device_type: AudioDeviceType,
 ) -> Result<IMMDevice> {
-    init_com_mta()?;
+    // 内部に NUL バイトを含む場合は拒否する。
+    if device_id.is_some_and(|id| id.contains('\0')) {
+        return Err(Error::InvalidDeviceId);
+    }
+
     unsafe {
         // デバイス列挙子を作成
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-                .map_err(|_| Error::DeviceAccessDenied)?;
+                .map_err(|e| map_com_error(&e, Error::DeviceAccessDenied))?;
         if let Some(id) = device_id {
             // 指定されたデバイスを取得
             let wide_id: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
@@ -228,5 +290,144 @@ pub(crate) fn get_device_by_id(
                 .GetDefaultAudioEndpoint(data_flow, eConsole)
                 .map_err(|_| Error::DeviceNotFound)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 呼び出し元スレッドの COM 初期化カウンタが 0 であることを検証する。
+    ///
+    /// カウンタが 0 なら `CoInitializeEx` は新規初期化になって S_OK を返す。
+    /// 0 でなければ S_FALSE が返るため、カウンタが解放されていないことを検出できる。
+    fn assert_com_initialization_count_is_zero() {
+        unsafe {
+            let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
+            assert_eq!(
+                hr, S_OK,
+                "COM 初期化カウンタが 0 に戻っていれば新規初期化になり S_OK が返ること"
+            );
+            // 検証のために増やしたカウンタを解放する。
+            CoUninitialize();
+        }
+    }
+
+    /// `ComGuard::init_mta` が返すガードを drop すると、スレッドの COM 初期化カウンタが
+    /// 初期化前の状態に戻ること。
+    #[test]
+    fn com_guard_decrements_thread_initialization_count() {
+        // テストスレッドは COM 未初期化の状態で始まるため、最初の初期化は S_OK になる。
+        let guard =
+            ComGuard::init_mta().expect("テストスレッドで COM を MTA モードで初期化できること");
+
+        unsafe {
+            // ガードを保持している間はスレッドが既に MTA で初期化済みなので S_FALSE が返る。
+            // この呼び出しでもカウンタが 1 増えるため、ここで対応する CoUninitialize を呼ぶ。
+            let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
+            assert_eq!(
+                hr, S_FALSE,
+                "ガードを保持している間はスレッドが MTA で初期化済みとして扱われること"
+            );
+            CoUninitialize();
+        }
+
+        // ガードを drop すると、ComGuard::init_mta が増やしたカウンタが 1 減る。
+        drop(guard);
+        assert_com_initialization_count_is_zero();
+    }
+
+    /// デバイス列挙が呼び出し元スレッドの COM 初期化を必要とすること。
+    #[test]
+    fn enumerate_devices_requires_thread_initialization() {
+        // 初期化していないスレッドでは COM が使えないため、列挙は ComInitFailed で失敗する。
+        assert!(
+            matches!(
+                WasapiDeviceListImpl::enumerate(None),
+                Err(Error::ComInitFailed)
+            ),
+            "COM を初期化していないスレッドでは列挙が ComInitFailed で失敗すること"
+        );
+
+        // 初期化している間は列挙でき、ガードを drop するとカウンタが元に戻る。
+        // デバイスの有無によって列挙の成否は変わるため、結果は破棄する。
+        let guard = crate::initialize_thread()
+            .expect("テストスレッドで COM を MTA モードで初期化できること");
+        let _ = WasapiDeviceListImpl::enumerate(None);
+        drop(guard);
+        assert_com_initialization_count_is_zero();
+    }
+
+    /// `WAVEFORMATEX` のフィールドを値として取り出したタプルを返す。
+    fn fields(format: WAVEFORMATEX) -> (u16, u16, u32, u32, u16, u16, u16) {
+        // WAVEFORMATEX は packed なので、フィールドの参照を作らずに値をコピーする
+        (
+            format.wFormatTag,
+            format.nChannels,
+            format.nSamplesPerSec,
+            format.nAvgBytesPerSec,
+            format.nBlockAlign,
+            format.wBitsPerSample,
+            format.cbSize,
+        )
+    }
+
+    /// 指定した形式の `WAVEFORMATEX` を組み立てること
+    #[test]
+    fn builds_wave_format() {
+        assert_eq!(
+            fields(
+                build_wave_format(AudioFormat::S16, 48000, 1)
+                    .expect("S16 48000 Hz 1 ch を組み立てられること")
+            ),
+            (WAVE_FORMAT_PCM as u16, 1, 48000, 96000, 2, 16, 0),
+            "S16 は 1 サンプル 2 バイトの PCM になること"
+        );
+        assert_eq!(
+            fields(
+                build_wave_format(AudioFormat::F32, 44100, 2)
+                    .expect("F32 44100 Hz 2 ch を組み立てられること")
+            ),
+            (WAVE_FORMAT_IEEE_FLOAT as u16, 2, 44100, 352800, 8, 32, 0),
+            "F32 は 1 サンプル 4 バイトの IEEE_FLOAT になること"
+        );
+    }
+
+    /// 不正な値は拒否すること
+    #[test]
+    fn rejects_invalid_wave_format() {
+        // サンプルレートとチャンネル数が 0 の場合は拒否する
+        assert!(
+            matches!(
+                build_wave_format(AudioFormat::S16, 0, 1),
+                Err(Error::InvalidAudioFormat)
+            ),
+            "sample_rate が 0 の場合は InvalidAudioFormat になること"
+        );
+        assert!(
+            matches!(
+                build_wave_format(AudioFormat::S16, 48000, 0),
+                Err(Error::InvalidAudioFormat)
+            ),
+            "channels が 0 の場合は InvalidAudioFormat になること"
+        );
+
+        // 32768 ch は 1 フレーム 65536 バイトになり nBlockAlign に収まらない
+        assert!(
+            matches!(
+                build_wave_format(AudioFormat::S16, 48000, 32768),
+                Err(Error::InvalidAudioFormat)
+            ),
+            "nBlockAlign が u16 に収まらない場合は InvalidAudioFormat になること"
+        );
+
+        // i32::MAX Hz 2 ch は 8589934588 バイト/秒になり nAvgBytesPerSec に収まらない
+        assert!(
+            matches!(
+                build_wave_format(AudioFormat::S16, i32::MAX as u32, 2),
+                Err(Error::InvalidAudioFormat)
+            ),
+            "nAvgBytesPerSec が u32 に収まらない場合は InvalidAudioFormat になること"
+        );
     }
 }

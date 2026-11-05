@@ -1,3 +1,8 @@
+//! FFI バインディングを生成するビルドスクリプト。
+//!
+//! `bindgen` で C / Objective-C ヘッダから Rust バインディングを生成し、
+//! `cc` でバックエンドの C / Objective-C 実装をコンパイルしてリンクする。
+
 use std::env;
 use std::path::{Path, PathBuf};
 

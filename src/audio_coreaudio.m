@@ -410,7 +410,12 @@ static AudioDeviceID find_device_by_uid(const char* uid) {
     }
 
     AudioDeviceID foundDevice = kAudioObjectUnknown;
+    // uid が UTF-8 として解釈できない場合、targetUID は nil になる
     NSString* targetUID = [NSString stringWithUTF8String:uid];
+    if (!targetUID) {
+        free(deviceIDs);
+        return kAudioObjectUnknown;
+    }
 
     for (UInt32 i = 0; i < deviceCount; i++) {
         CFStringRef deviceUID = NULL;
@@ -569,17 +574,18 @@ int audio_coreaudio_session_start(struct AudioSession* session,
     return 0;
 }
 
-void audio_coreaudio_session_stop(struct AudioSession* session) {
+int audio_coreaudio_session_stop(struct AudioSession* session) {
     if (!session) {
-        return;
+        return -1;
     }
 
     if (!atomic_load(&session->running)) {
-        return;
+        return 0;
     }
 
     atomic_store(&session->running, 0);
     AudioQueueStop(session->queue, true);
+    return 0;
 }
 
 int audio_coreaudio_session_sample_rate(struct AudioSession* session) {
@@ -780,13 +786,18 @@ int audio_coreaudio_playback_session_start(struct PlaybackSession* session,
     return 0;
 }
 
-void audio_coreaudio_playback_session_stop(struct PlaybackSession* session) {
-    if (!session || !atomic_load(&session->running)) {
-        return;
+int audio_coreaudio_playback_session_stop(struct PlaybackSession* session) {
+    if (!session) {
+        return -1;
+    }
+
+    if (!atomic_load(&session->running)) {
+        return 0;
     }
 
     atomic_store(&session->running, 0);
     AudioQueueStop(session->queue, true);
+    return 0;
 }
 
 int audio_coreaudio_playback_session_sample_rate(struct PlaybackSession* session) {

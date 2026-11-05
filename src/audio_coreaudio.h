@@ -23,7 +23,7 @@ int audio_coreaudio_device_type(struct AudioDevice* device);
 struct AudioSession* audio_coreaudio_session_create(const char* device_id, int sample_rate, int channels);
 void audio_coreaudio_session_destroy(struct AudioSession* session);
 int audio_coreaudio_session_start(struct AudioSession* session, AudioFrameCallback callback, void* user_data);
-void audio_coreaudio_session_stop(struct AudioSession* session);
+int audio_coreaudio_session_stop(struct AudioSession* session);
 int audio_coreaudio_session_sample_rate(struct AudioSession* session);
 int audio_coreaudio_session_channels(struct AudioSession* session);
 
@@ -31,7 +31,7 @@ int audio_coreaudio_session_channels(struct AudioSession* session);
 struct PlaybackSession* audio_coreaudio_playback_session_create(const char* device_id, int sample_rate, int channels);
 void audio_coreaudio_playback_session_destroy(struct PlaybackSession* session);
 int audio_coreaudio_playback_session_start(struct PlaybackSession* session, AudioPlaybackCallback callback, void* user_data);
-void audio_coreaudio_playback_session_stop(struct PlaybackSession* session);
+int audio_coreaudio_playback_session_stop(struct PlaybackSession* session);
 int audio_coreaudio_playback_session_sample_rate(struct PlaybackSession* session);
 int audio_coreaudio_playback_session_channels(struct PlaybackSession* session);
 

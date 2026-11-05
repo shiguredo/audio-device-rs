@@ -3,8 +3,11 @@
 //! このクレートは macOS、Linux (PulseAudio/PipeWire)、Windows (WASAPI) をサポートしています。
 //! 音声キャプチャ（マイク入力）と音声再生（スピーカー出力）の機能を提供します。
 
+#![warn(missing_docs)]
+
 mod common;
 mod error;
+mod runtime;
 
 #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire, enable_wasapi))]
 mod capture;
@@ -34,10 +37,12 @@ pub use common::{
 };
 
 #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire, enable_wasapi))]
-pub use capture::AudioCapture;
+pub use capture::{AudioCapture, AudioCaptureSession};
 #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire, enable_wasapi))]
 pub use device::{AudioDevice, AudioDeviceList};
 #[cfg(any(enable_coreaudio, enable_pulse, enable_pipewire, enable_wasapi))]
-pub use playback::AudioPlayback;
+pub use playback::{AudioPlayback, AudioPlaybackSession};
 
 pub use error::{Error, Result};
+
+pub use runtime::{ThreadGuard, initialize_thread};

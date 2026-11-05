@@ -25,7 +25,7 @@ macOS / Linux / Windows に対応したオーディオデバイスライブラ�
 
 - macOS / Linux / Windows で共通のキャプチャ / 再生 API
 - Linux では PulseAudio と PipeWire を同時に有効化し、実行時にバックエンドを選択可能
-- ランタイム依存クレートなし (システムライブラリのみ)
+- 依存は最小限 (macOS / Linux はシステムライブラリのみ、Windows は `windows` クレートのみ)
 
 ## 対応プラットフォーム
 
@@ -44,20 +44,34 @@ macOS / Linux / Windows に対応したオーディオデバイスライブラ�
 Linux では `pulse` と `pipewire` を同時に有効化できます。
 実行時に使うバックエンドは、`AudioDeviceList::enumerate_pulse()` / `AudioCapture::new_pipewire()` / `AudioPlayback::new_pipewire()` のように明示 API で選べます。
 
-`default-*` feature はプラットフォームごとに 1 つだけ有効にしてください。
+`default-*` feature はプラットフォームごとに 1 つまで有効にできます。同じプラットフォームで 2 つ以上有効にするとビルドに失敗します。
+ビルド対象以外のプラットフォームの `default-*` は無視されるため、`default-features = false` で `default-coreaudio` / `default-pipewire` / `default-wasapi` を指定すると、Linux だけ PipeWire をデフォルトにできます。
+
 `AudioDeviceList::enumerate()` や `AudioCapture::new()` / `AudioPlayback::new()` は、有効な `default-*` に対応するバックエンドを使います。
+`default-*` を 1 つも有効にしない場合、これらの関数は定義されず、`AudioDeviceList::enumerate_pulse()` や `AudioCapture::new_pulse()` のような明示 API だけを使えます。
 
 ## ビルド要件
 
 ### 共通
 
-- Rust 1.93 以降
+- Rust 1.95 以降
 
 ### macOS
 
-追加の依存パッケージは不要です。
+Xcode Command Line Tools 以外の追加パッケージは不要です。
+Objective-C のコンパイルと、`bindgen` が使う libclang に Command Line Tools を使います。
+
+```bash
+xcode-select --install
+```
 
 ### Ubuntu (Linux)
+
+共通 (C のコンパイル、`bindgen` が使う libclang、システムライブラリの検出に使う pkg-config):
+
+```bash
+sudo apt install build-essential libclang-dev pkg-config
+```
 
 PulseAudio バックエンド (デフォルト):
 
@@ -87,7 +101,7 @@ systemctl --user enable --now pipewire
 
 両方を有効にする場合は、上記の開発パッケージをそれぞれインストールしてください。
 
-Linux で USB オーディオデバイスを認識させる手順は [docs/LINUX.md](docs/LINUX.md) を参照してください。
+Linux で USB オーディオデバイスを認識させる手順は [Linux 向けドキュメント](https://github.com/shiguredo/audio-device-rs/blob/develop/docs/LINUX.md) を参照してください。
 
 ### Windows
 
@@ -108,10 +122,37 @@ cargo build -p shiguredo_audio_device --features pipewire
 
 ## 使い方
 
+### セッションの開始と停止
+
+`start()` はセッションを表す `AudioCaptureSession` / `AudioPlaybackSession` を返します。
+ガードが生存している間は `AudioCapture` / `AudioPlayback` を借用するため、実行中にオブジェクトを破棄したり、再度 `start()` を呼んだりすることはできません。
+停止はガードの `stop()` で行います。`stop()` は実行中のコールバックの完了を待ってから戻ります。ガードを drop した場合も停止します。
+実行中に設定や実際のサンプルレート・チャンネル数を参照する場合は、ガードの `config()` / `sample_rate()` / `channels()` を使います。
+
+`let _ = capture.start()?;` のように受け取ると、ガードはその場で drop されてすぐに停止します。`let session = capture.start()?;` のように変数に保持してください。
+
+ガードは `AudioCapture` / `AudioPlayback` を借用しているため `'static` ではなく、`std::thread::spawn` には渡せません。
+別のスレッドから停止する場合や、ガードを別のスレッドで drop する場合は、`std::thread::scope` で起動したスレッドへガードを move して操作します。
+
+```rust
+let session = capture.start()?;
+
+std::thread::scope(|scope| {
+    scope.spawn(move || {
+        let _guard = shiguredo_audio_device::initialize_thread()
+            .expect("failed to initialize the audio library");
+        // ... 停止する条件を待つ ...
+        session.stop();
+    });
+});
+```
+
 ### デバイス列挙
 
 ```rust
 use shiguredo_audio_device::{AudioDeviceList, AudioDeviceType};
+
+let _guard = shiguredo_audio_device::initialize_thread()?;
 
 // 全デバイス (入力 / 出力) を取得
 let device_list = AudioDeviceList::enumerate()?;
@@ -149,6 +190,8 @@ let pipewire_devices = AudioDeviceList::enumerate_pipewire()?;
 ```rust
 use shiguredo_audio_device::{AudioCapture, AudioCaptureConfig};
 
+let _guard = shiguredo_audio_device::initialize_thread()?;
+
 // キャプチャ設定
 let config = AudioCaptureConfig {
     device_id: None, // デフォルトデバイスを使用
@@ -166,18 +209,27 @@ let mut capture = AudioCapture::new(config, |frame| {
 })?;
 
 // キャプチャ開始
-capture.start()?;
+let session = capture.start()?;
 
 // ... キャプチャ中 ...
 
 // キャプチャ停止
-capture.stop();
+session.stop();
 ```
+
+Windows では `sample_rate` と `channels` で指定した S16 のストリームを開き、共有モードの形式変換でデバイスの形式から変換します。
+指定した形式へ変換できない場合は `AudioCapture::new` が `Error::SessionCreateFailed` を返します。
+指定したサンプルレートやチャンネル数が WASAPI の形式として表現できない場合は `Error::InvalidAudioFormat` を返します。
+0 以下の値を指定した場合、実際のストリームのサンプルレートは 48000 Hz、チャンネル数は 1 ch になります。
 
 ### 再生
 
 ```rust
+use std::f64::consts::PI;
+
 use shiguredo_audio_device::{AudioPlayback, AudioPlaybackConfig, PlaybackFrame};
+
+let _guard = shiguredo_audio_device::initialize_thread()?;
 
 let config = AudioPlaybackConfig {
     device_id: None, // デフォルトデバイスを使用
@@ -186,19 +238,37 @@ let config = AudioPlaybackConfig {
 };
 
 // コールバックは (要求フレーム数, チャンネル数, サンプルレート) を受け取り、
-// PlaybackFrame を返す。None を返すと無音になる
-let mut playback = AudioPlayback::new(config, |frames, channels, sample_rate| {
+// PlaybackFrame を返す。None を返すと無音になる。
+let mut position = 0u64;
+let mut playback = AudioPlayback::new(config, move |frames, channels, sample_rate| {
     let total = (frames * channels) as usize;
-    let samples = vec![0i16; total]; // ここで PCM を生成する
+    let mut samples = vec![0i16; total];
+    // position の位置からのサイン波を frame 数分だけ生成する
+    for index in 0..frames as usize {
+        let t = (position + index as u64) as f64 / sample_rate as f64;
+        let value = (2.0 * PI * 440.0 * t).sin() * 0.5 * f64::from(i16::MAX);
+        for channel in 0..channels as usize {
+            samples[index * channels as usize + channel] = value as i16;
+        }
+    }
+    position += frames as u64;
     PlaybackFrame::from_s16(&samples, channels, sample_rate).ok()
 })?;
 
-playback.start()?;
+// 再生開始
+let session = playback.start()?;
 
 // ... 再生中 ...
 
-playback.stop();
+// 再生停止
+session.stop();
 ```
+
+Windows では `sample_rate` と `channels` で指定した F32 のストリームを開き、共有モードの形式変換でデバイスの形式へ変換します。
+コールバックが S16 の `PlaybackFrame` を返した場合は F32 に変換して書き込みます。
+指定した形式で初期化できない場合は `AudioPlayback::new` が `Error::SessionCreateFailed` を返します。
+指定したサンプルレートやチャンネル数が WASAPI の形式として表現できない場合は `Error::InvalidAudioFormat` を返します。
+0 以下の値を指定した場合、実際のストリームのサンプルレートは 48000 Hz、チャンネル数は 2 ch になります。
 
 ## サンプル
 
@@ -208,7 +278,7 @@ playback.stop();
 # デバイス一覧を JSON で出力する
 cargo run --example device_list
 
-# デバイスごとの詳細情報を JSON で出力する
+# デバイスごとの詳細情報と統計情報を JSON で出力する
 cargo run --example device_info
 
 # デフォルト出力デバイスに 440Hz のサイン波を再生する

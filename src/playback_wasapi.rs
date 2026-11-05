@@ -1,5 +1,6 @@
 //! Windows 用オーディオ再生 (WASAPI)
 
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -13,13 +14,23 @@ use crate::common::{
     AudioDeviceType, AudioFormat, AudioPlaybackConfig, PlaybackFrame,
     write_playback_frame_to_buffer,
 };
-use crate::device_wasapi::{SendHandle, SendPtr, get_device_by_id};
+use crate::device_wasapi::{ComGuard, SendHandle, SendPtr, build_wave_format, get_device_by_id};
 use crate::error::{Error, Result};
 
-pub(crate) struct PlaybackContext {
-    pub(crate) callback: Box<dyn Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync>,
-    pub(crate) running: AtomicBool,
+/// 再生のユーザーコールバック。
+type PlaybackCallback = Box<dyn FnMut(i32, i32, i32) -> Option<PlaybackFrame> + Send>;
+
+struct PlaybackContext {
+    // コールバックは `&mut` を要求するが、再生スレッドには `PlaybackContext` の
+    // 共有参照として渡すため、内側だけを `RefCell` で可変にする。
+    callback: RefCell<PlaybackCallback>,
 }
+
+// SAFETY: PlaybackContext は WasapiPlaybackImpl の Box に保持され、再生スレッドの
+// 実行中は drop されない。stop はスレッドを join してから戻るため、スレッドは
+// join 後にコンテキストへアクセスしない。コールバックの借用は再生スレッドだけが
+// 直列に作る。
+unsafe impl Send for SendPtr<*const PlaybackContext> {}
 
 struct SessionData {
     audio_client: IAudioClient,
@@ -31,7 +42,7 @@ struct SessionData {
     buffer_frames: u32,
 }
 
-// Safety: IAudioRenderClient / IAudioClient は COM の MTA (COINIT_MULTITHREADED) で初期化しており、
+// SAFETY: IAudioRenderClient / IAudioClient は COM の MTA (COINIT_MULTITHREADED) で初期化しており、
 // MTA オブジェクトはスレッド間で安全に移送できる。
 unsafe impl Send for SendPtr<IAudioRenderClient> {}
 unsafe impl Send for SendPtr<IAudioClient> {}
@@ -39,7 +50,10 @@ unsafe impl Send for SendPtr<IAudioClient> {}
 /// オーディオ再生
 pub(crate) struct WasapiPlaybackImpl {
     session: Option<SessionData>,
-    context: Option<Arc<PlaybackContext>>,
+    /// ユーザーコールバックを保持するコンテキスト
+    context: Box<PlaybackContext>,
+    /// 再生スレッドと停止処理で共有する実行状態
+    running: Arc<AtomicBool>,
     playback_thread: Option<thread::JoinHandle<()>>,
     config: AudioPlaybackConfig,
     actual_sample_rate: i32,
@@ -53,7 +67,7 @@ impl WasapiPlaybackImpl {
     /// データがない場合は `None` を返すと無音が再生される。
     pub fn new<F>(config: AudioPlaybackConfig, callback: F) -> Result<Self>
     where
-        F: Fn(i32, i32, i32) -> Option<PlaybackFrame> + Send + Sync + 'static,
+        F: FnMut(i32, i32, i32) -> Option<PlaybackFrame> + Send + 'static,
     {
         // デバイスを取得（再生なので出力デバイス）
         let device = get_device_by_id(config.device_id.as_deref(), AudioDeviceType::Output)?;
@@ -64,32 +78,37 @@ impl WasapiPlaybackImpl {
                 .Activate(CLSCTX_ALL, None)
                 .map_err(|_| Error::DeviceAccessDenied)?;
 
-            // ミックスフォーマットを取得
-            let mix_format = audio_client
-                .GetMixFormat()
-                .map_err(|_| Error::DeviceAccessDenied)?;
-            let wave_format = &*mix_format;
+            // 要求する形式は F32 に固定する。S16 のフレームも F32 へは無損失で変換できる。
+            // 0 以下の値は既定値に丸める
+            let sample_rate = if config.sample_rate <= 0 {
+                48000
+            } else {
+                config.sample_rate as u32
+            };
+            let channels = if config.channels <= 0 {
+                2
+            } else {
+                config.channels
+            };
+            let channels = u16::try_from(channels).map_err(|_| Error::InvalidAudioFormat)?;
+            let client_format = build_wave_format(AudioFormat::F32, sample_rate, channels)?;
+            let sample_rate = client_format.nSamplesPerSec as i32;
+            let channels = client_format.nChannels as i32;
 
-            // フォーマット情報を取得
-            let format = crate::device_wasapi::determine_audio_format(mix_format);
-
-            let sample_rate = wave_format.nSamplesPerSec as i32;
-            let channels = wave_format.nChannels as i32;
-
-            // オーディオクライアントを初期化（10ms バッファ）
+            // デバイスの mix format への変換は共有モードの形式変換に任せる
             let init_result = audio_client.Initialize(
                 AUDCLNT_SHAREMODE_SHARED,
-                AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+                    | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                    | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
                 100_000, // 100 ナノ秒単位で 10ms を指定する
                 0,
-                mix_format,
+                &client_format,
                 Some(std::ptr::null()),
             );
-
-            // Initialize の成否にかかわらず mix_format を解放する
-            CoTaskMemFree(Some(mix_format as *const _));
-
             init_result.map_err(|_| Error::SessionCreateFailed)?;
+
+            let format = AudioFormat::F32;
 
             // バッファサイズを取得
             let buffer_frames = audio_client
@@ -111,9 +130,9 @@ impl WasapiPlaybackImpl {
                 Error::SessionCreateFailed
             })?;
 
-            let context = Arc::new(PlaybackContext {
-                callback: Box::new(callback),
-                running: AtomicBool::new(false),
+            let callback: PlaybackCallback = Box::new(callback);
+            let context = Box::new(PlaybackContext {
+                callback: RefCell::new(callback),
             });
 
             Ok(Self {
@@ -126,7 +145,8 @@ impl WasapiPlaybackImpl {
                     channels,
                     buffer_frames,
                 }),
-                context: Some(context),
+                context,
+                running: Arc::new(AtomicBool::new(false)),
                 playback_thread: None,
                 config,
                 actual_sample_rate: sample_rate,
@@ -138,11 +158,6 @@ impl WasapiPlaybackImpl {
     /// 再生を開始
     pub fn start(&mut self) -> Result<()> {
         let session = self.session.as_ref().ok_or(Error::SessionStartFailed)?;
-        let context = self.context.as_ref().ok_or(Error::SessionStartFailed)?;
-
-        if context.running.load(Ordering::Acquire) {
-            return Ok(());
-        }
 
         // オーディオクライアントを開始
         unsafe {
@@ -162,15 +177,20 @@ impl WasapiPlaybackImpl {
         let buffer_frames = session.buffer_frames;
 
         // スレッド生成前に running フラグを立てる
-        context.running.store(true, Ordering::Release);
+        self.running.store(true, Ordering::Release);
 
-        // スレッドに渡すための context クローン
-        let thread_context = Arc::clone(context);
+        // コンテキストは self に残したまま、そのポインタだけをスレッドへ渡す。
+        // Box の内容は WasapiPlaybackImpl が drop されるまで移動しない。stop は
+        // スレッドを join してから戻り、Box はその後 drop されるため、ポインタは
+        // スレッドの実行中ずっと有効である。
+        let context = SendPtr(std::ptr::from_ref(&*self.context));
+        let running = Arc::clone(&self.running);
 
         // 再生スレッドを開始
         let handle = thread::Builder::new()
             .name("audio-playback".to_string())
             .spawn(move || {
+                let _com_guard = ComGuard::init_mta();
                 playback_thread_func(
                     render_client.into_inner(),
                     audio_client.into_inner(),
@@ -179,11 +199,12 @@ impl WasapiPlaybackImpl {
                     sample_rate,
                     channels,
                     buffer_frames,
-                    thread_context,
+                    context.into_inner(),
+                    running,
                 );
             })
             .map_err(|_| {
-                context.running.store(false, Ordering::Release);
+                self.running.store(false, Ordering::Release);
                 unsafe {
                     let _ = session.audio_client.Stop();
                 }
@@ -196,10 +217,8 @@ impl WasapiPlaybackImpl {
 
     /// 再生を停止
     pub fn stop(&mut self) {
-        if let Some(context) = &self.context
-            && context.running.load(Ordering::Acquire)
-        {
-            context.running.store(false, Ordering::Release);
+        if self.running.load(Ordering::Acquire) {
+            self.running.store(false, Ordering::Release);
 
             // イベントをシグナル状態にしてスレッドを起こす
             if let Some(session) = &self.session {
@@ -249,9 +268,14 @@ impl Drop for WasapiPlaybackImpl {
     }
 }
 
+// SAFETY: COM オブジェクトは MTA (COINIT_MULTITHREADED) で初期化しており、
+// MTA オブジェクトはスレッド間で安全に移送できる。
 unsafe impl Send for WasapiPlaybackImpl {}
 
 /// 再生スレッド関数
+///
+/// `context` は `PlaybackContext` を指す。この関数が戻るまで、そのコンテキストが
+/// 存続することを前提とする。
 #[expect(clippy::too_many_arguments)]
 fn playback_thread_func(
     render_client: IAudioRenderClient,
@@ -261,19 +285,19 @@ fn playback_thread_func(
     sample_rate: i32,
     channels: i32,
     buffer_frames: u32,
-    context: Arc<PlaybackContext>,
+    context: *const PlaybackContext,
+    running: Arc<AtomicBool>,
 ) {
-    // COM を MTA で初期化する。
-    // 呼び出し元で検証済みなら失敗しない。
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-    }
+    // SAFETY: context は WasapiPlaybackImpl の Box が保持する PlaybackContext を
+    // 指す。stop はこのスレッドを join してから戻るため、このスレッドの実行中は
+    // コンテキストが生存する。コールバックはこのスレッドからしか呼ばれない。
+    let context = unsafe { &*context };
 
     // running フラグが false になるまでループする
-    while context.running.load(Ordering::Acquire) {
+    while running.load(Ordering::Acquire) {
         // バッファに空きができるまでイベントを待機する
         let wait_result = unsafe { WaitForSingleObject(event_handle, 10) };
-        if !context.running.load(Ordering::Acquire) {
+        if !running.load(Ordering::Acquire) {
             break;
         }
         if wait_result != WAIT_OBJECT_0 && wait_result != WAIT_TIMEOUT {
@@ -290,14 +314,18 @@ fn playback_thread_func(
             continue;
         }
 
-        // ユーザーコールバックからフレームデータを取得する
-        let frame_opt = (context.callback)(frames_available as i32, channels, sample_rate);
-
         // レンダリングバッファを取得する
         let data_ptr = match unsafe { render_client.GetBuffer(frames_available) } {
             Ok(p) => p,
             Err(_) => continue,
         };
+
+        // コールバックはこのスレッドからのみ直列に呼ばれ、その実行中に
+        // WasapiPlaybackImpl 側が callback へアクセスすることもない。
+        let mut callback = context.callback.borrow_mut();
+
+        // ユーザーコールバックからフレームデータを取得する
+        let frame_opt = callback(frames_available as i32, channels, sample_rate);
 
         if let Some(frame) = frame_opt {
             // フレームデータをバッファに変換して書き込む
@@ -333,9 +361,5 @@ fn playback_thread_func(
                     .ReleaseBuffer(frames_available, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32);
             }
         }
-    }
-
-    unsafe {
-        CoUninitialize();
     }
 }
