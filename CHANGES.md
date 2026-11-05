@@ -11,6 +11,10 @@
 
 ## develop
 
+## 2026.4.0
+
+**リリース日**: 2026-11-05
+
 - [CHANGE] macOS / Linux で NUL バイトを含むデバイス ID を指定した場合に `Error::NullPointer` ではなく `Error::InvalidDeviceId` を返すようにする
   - @melpon
 - [CHANGE] Windows ではライブラリを利用するスレッドの先頭で `initialize_thread()` を呼ぶ必要があるようにする
@@ -37,8 +41,6 @@
   - コールバックは呼び出しをまたいで状態を保持し、`Cell` / `RefCell` / `Atomic` などを使わずに更新できる
   - `Fn` クロージャは `FnMut` を満たすため、既存の呼び出し側は変更不要である
   - @melpon
-- [FIX] `Cargo.toml` の `windows` 依存を MSRV 1.93 の cargo が解釈できる形式に修正する
-  - @voluntas
 - [FIX] examples が `--no-default-features` でビルドできない問題を修正する
   - オーディオバックエンドが有効でない場合はエラーメッセージを表示して終了する
   - @voluntas
@@ -119,8 +121,6 @@
   - @voluntas
 - [UPDATE] shiguredo-rust 規約に準拠する
   - 公開 API のドキュメント追加、`Error` への `Copy` 実装、不要な lint 抑制の削除、`.unwrap()` から `.expect()` への置き換えなど
-  - @voluntas
-- [UPDATE] `rust-toolchain.toml` のツールチェーンを MSRV (1.93) に固定する
   - @voluntas
 - [UPDATE] 依存クレートのバージョン指定をマイナーバージョンまでに揃え、用途コメントを追加する
   - @voluntas
