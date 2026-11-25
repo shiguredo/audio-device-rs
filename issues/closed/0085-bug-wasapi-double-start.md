@@ -80,7 +80,7 @@ let session2 = capture.start()?;
 
 ## 解決方法
 
-クローズする。コード変更は行わない。
+closed にする。コード変更は行わない。
 
 `IAudioClient::Start` は、既に開始済みのストリームに対して `S_FALSE` ではなく
 `AUDCLNT_E_NOT_STOPPED` を返す。Microsoft のドキュメントにこの戻り値があり、
@@ -105,7 +105,17 @@ Wine の WASAPI テストでも二重 `Start` が `AUDCLNT_E_NOT_STOPPED` にな
 `compile_fail` doctest が `mem::forget` を防げないという指摘は正しいが、
 実行時には上記のとおり `Start` のエラーで戻るため、未定義動作にはならない。
 
-Windows 実機でのテストは不要と判断する。API の仕様と Wine のテストで
-戻り値が一致しており、コード上の到達経路も確認できるためである。
+Windows 実機でも確認した。Windows 11 25H2 (ビルド 26200.9974) の既定の
+再生デバイスと既定のキャプチャデバイスに対して、ライブラリと同じ初期化条件
+(共有モード、イベント駆動、形式変換あり) で vtable を直接呼び出し、生の
+HRESULT を取得した結果は次のとおり。
+
+- 再生・キャプチャとも、2 回目の `Start` は `AUDCLNT_E_NOT_STOPPED` (0x88890005)
+- 1 回目の `Stop` は `S_OK`、2 回目の `Stop` は `S_FALSE` (0x00000001)
+- `Stop` 後の `Start` は `S_OK`、その直後の `Start` は再び
+  `AUDCLNT_E_NOT_STOPPED`
+- 公開 API を `std::mem::forget` でだました後の再 `start` は、キャプチャと
+  再生のどちらも `Error::SessionStartFailed` になる
+
 将来 `Start` が成功する状態に変わった場合に備えて `running` を Rust 側で
 確認する防御は考えられるが、この issue の未定義動作を修正するものではない。
