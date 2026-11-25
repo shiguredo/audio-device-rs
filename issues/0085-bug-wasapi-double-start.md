@@ -1,7 +1,7 @@
 # WASAPI の start が実行中を検査せず mem::forget で二重起動できる
 
 - Created: 2026-11-25
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-25
 - Branch: feature/fix-wasapi-double-start
 - Polished: {YYYY-MM-DD}
 
@@ -77,3 +77,35 @@ let session2 = capture.start()?;
   Windows 実機で実行できない環境では、コードレビューと Windows ターゲットの
   `cargo clippy` で確認する
 - `cargo clippy --target x86_64-pc-windows-msvc` が通る
+
+## 解決方法
+
+クローズする。コード変更は行わない。
+
+`IAudioClient::Start` は、既に開始済みのストリームに対して `S_FALSE` ではなく
+`AUDCLNT_E_NOT_STOPPED` を返す。Microsoft のドキュメントにこの戻り値があり、
+Wine の WASAPI テストでも二重 `Start` が `AUDCLNT_E_NOT_STOPPED` になることを
+確認している
+([IAudioClient::Start](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-start)、
+[render.c](https://github.com/wine-mirror/wine/blob/master/dlls/mmdevapi/tests/render.c#L502)、
+[capture.c](https://github.com/wine-mirror/wine/blob/master/dlls/mmdevapi/tests/capture.c#L357))。
+
+`AUDCLNT_E_NOT_STOPPED` は `0x88890005` の負の HRESULT であるため、
+`windows-rs` の `Start()` は `HRESULT::ok()` により `Err` を返す。
+`WasapiCaptureImpl::start` と `WasapiPlaybackImpl::start` は
+`Start().map_err(|_| Error::SessionStartFailed)?` でこのエラーを伝播するため、
+`running` の更新、ワーカースレッドの生成、`JoinHandle` の上書きには到達しない。
+したがって、二重起動、ワーカーの detach、`RefCell` の共有、
+コンテキストの解放後使用、`WaitForSingleObject` のビジーループはいずれも
+発生しない。
+
+`S_FALSE` は `IAudioClient::Stop` が「既に停止済み」の場合に返す値であり、
+`Start` の戻り値ではない。報告は `Start` と `Stop` の戻り値を混同している。
+
+`compile_fail` doctest が `mem::forget` を防げないという指摘は正しいが、
+実行時には上記のとおり `Start` のエラーで戻るため、未定義動作にはならない。
+
+Windows 実機でのテストは不要と判断する。API の仕様と Wine のテストで
+戻り値が一致しており、コード上の到達経路も確認できるためである。
+将来 `Start` が成功する状態に変わった場合に備えて `running` を Rust 側で
+確認する防御は考えられるが、この issue の未定義動作を修正するものではない。
